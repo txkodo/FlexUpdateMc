@@ -1,60 +1,41 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::{
-    model::McDimension,
-    service::{
-        chunk_migrator::ChunkMigrator,
-        server_factory::{ServerCreationMethod, ServerFactory},
-        server_handler::ChunkGenerationConfig,
-        world_handler::WorldHandler,
-    },
-    util::dir_overwrite,
+use crate::service::{
+    chunk_migrator::ChunkMigrator,
+    server_handler::{ChunkGenerationConfig, ServerHandler},
 };
 
 pub struct FlexUpdater {
     work_path: PathBuf,
     chunk_migrator: Box<dyn ChunkMigrator>,
-    server_factory: Box<dyn ServerFactory>,
 }
 
 impl FlexUpdater {
     pub fn new(
         work_path: PathBuf,
         chunk_migrator: Box<dyn ChunkMigrator>,
-        server_factory: Box<dyn ServerFactory>,
     ) -> Self {
         FlexUpdater {
             work_path,
             chunk_migrator,
-            server_factory,
         }
     }
 
     pub fn update_flex(
         &self,
-        source_world: &dyn WorldHandler,
-        target_world: &dyn WorldHandler,
+        source_world: &dyn ServerHandler,
+        target_world_path: &Path,
         old: &ChunkGenerationConfig,
         new: &ChunkGenerationConfig,
     ) -> Result<(), String> {
         // 元のワールドデータを用いてサーバーを作成
-        let target_server = self.server_factory.create_server_handler_from_world(
-            source_world,
-            &self.work_path.join("old_edited"),
-            ServerCreationMethod::WithRegion,
-        )?;
+        let mut target_server = source_world.copy_to(&self.work_path.join("old_edited"))?;
 
-        let old_plain_server = self.server_factory.create_server_handler_from_world(
-            source_world,
-            &self.work_path.join("old_plain"),
-            ServerCreationMethod::WithoutRegion,
-        )?;
+        let mut old_plain_server = source_world.copy_to(&self.work_path.join("old_edited"))?;
+        old_plain_server.clear_dimension_all()?;
 
-        let new_plain_server = self.server_factory.create_server_handler_from_world(
-            source_world,
-            &self.work_path.join("new_plain"),
-            ServerCreationMethod::WithoutRegion,
-        )?;
+        let mut new_plain_server = old_plain_server.copy_to(&self.work_path.join("old_edited"))?;
+        let mut result_server = old_plain_server.copy_to(target_world_path)?;
 
         let chunks = target_server.list_chunks()?;
 
@@ -81,22 +62,9 @@ impl FlexUpdater {
                 &new_plain_chunk,
             )?;
             // チャンクを更新
-            target_server.save_chunk(&new_chunk)?;
+            result_server.save_chunk(&new_chunk)?;
         }
 
-        let dims = [
-            McDimension::Overworld,
-            McDimension::Nether,
-            McDimension::TheEnd,
-        ];
-        for dim in &dims {
-            // 各ディメンションのチャンクを更新
-            dir_overwrite::overwrite_dir(
-                &target_world.get_region_dir(dim)?,
-                &target_server.get_region_dir(dim)?,
-            )
-            .map_err(|e| format!("Failed to overwrite region directory for {:?}: {}", dim, e))?;
-        }
         return Ok(());
     }
 }
