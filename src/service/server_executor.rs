@@ -101,3 +101,100 @@ impl ServerExecutor for ChildProcessServerExecutor {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct MockServerExecutor {
+    is_running: bool,
+    commands_sent: Vec<String>,
+    should_fail_start: bool,
+    should_fail_stop: bool,
+    should_fail_command: bool,
+}
+
+impl MockServerExecutor {
+    pub fn new() -> Self {
+        Self {
+            is_running: false,
+            commands_sent: Vec::new(),
+            should_fail_start: false,
+            should_fail_stop: false,
+            should_fail_command: false,
+        }
+    }
+
+    pub fn with_start_failure() -> Self {
+        Self {
+            should_fail_start: true,
+            ..Self::new()
+        }
+    }
+
+    pub fn with_stop_failure() -> Self {
+        Self {
+            should_fail_stop: true,
+            ..Self::new()
+        }
+    }
+
+    pub fn with_command_failure() -> Self {
+        Self {
+            should_fail_command: true,
+            ..Self::new()
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.is_running
+    }
+
+    pub fn commands_sent(&self) -> &[String] {
+        &self.commands_sent
+    }
+
+    pub fn clear_commands(&mut self) {
+        self.commands_sent.clear();
+    }
+}
+
+impl Default for MockServerExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServerExecutor for MockServerExecutor {
+    fn start(&mut self, _config: ServerExecutionConfig) -> Result<(), String> {
+        if self.should_fail_start {
+            return Err("Mock start failure".to_string());
+        }
+
+        if self.is_running {
+            return Err("Server is already running".to_string());
+        }
+
+        self.is_running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<(), String> {
+        if self.should_fail_stop {
+            return Err("Mock stop failure".to_string());
+        }
+
+        self.is_running = false;
+        Ok(())
+    }
+
+    fn send_command(&mut self, command: &str) -> Result<(), String> {
+        if self.should_fail_command {
+            return Err("Mock command failure".to_string());
+        }
+
+        if !self.is_running {
+            return Err("Server is not running".to_string());
+        }
+
+        self.commands_sent.push(command.to_string());
+        Ok(())
+    }
+}

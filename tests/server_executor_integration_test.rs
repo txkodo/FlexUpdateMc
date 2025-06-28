@@ -1,4 +1,4 @@
-use flex_updater_mc::service::server_executor::{ChildProcessServerExecutor, ServerExecutionConfig, ServerExecutor};
+use flex_updater_mc::service::server_executor::{ChildProcessServerExecutor, MockServerExecutor, ServerExecutionConfig, ServerExecutor};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -178,4 +178,33 @@ fn test_multiple_start_prevention() {
             let _ = executor.stop();
         }
     }
+}
+
+#[test]
+fn test_server_executor_trait_with_mock() {
+    // traitを通じてMockServerExecutorを使用するテスト
+    fn test_server_operations(executor: &mut dyn ServerExecutor) -> Result<(), String> {
+        let config = ServerExecutionConfig {
+            java_path: None,
+            jar_file_name: "test.jar".to_string(),
+            port: 25565,
+            cwd: env::current_dir().expect("Failed to get current directory"),
+        };
+        
+        executor.start(config)?;
+        executor.send_command("say Hello from trait test")?;
+        executor.stop()?;
+        Ok(())
+    }
+    
+    let mut mock_executor = MockServerExecutor::new();
+    
+    // trait経由でのテスト
+    let result = test_server_operations(&mut mock_executor);
+    assert!(result.is_ok());
+    
+    // Mockの状態確認
+    assert!(!mock_executor.is_running());
+    assert_eq!(mock_executor.commands_sent().len(), 1);
+    assert_eq!(mock_executor.commands_sent()[0], "say Hello from trait test");
 }
