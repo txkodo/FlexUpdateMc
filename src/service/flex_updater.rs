@@ -11,10 +11,7 @@ pub struct FlexUpdater {
 }
 
 impl FlexUpdater {
-    pub fn new(
-        work_path: PathBuf,
-        chunk_migrator: Box<dyn ChunkMigrator>,
-    ) -> Self {
+    pub fn new(work_path: PathBuf, chunk_migrator: Box<dyn ChunkMigrator>) -> Self {
         FlexUpdater {
             work_path,
             chunk_migrator,
