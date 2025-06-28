@@ -3,7 +3,7 @@ pub enum McDimension {
     Overworld,
     Nether,
     TheEnd,
-    Custom(String),
+    // Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

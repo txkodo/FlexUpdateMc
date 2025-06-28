@@ -4,6 +4,7 @@ use std::path::Path;
 pub struct ChunkGenerationConfig<'a> {
     pub java_path: Option<&'a Path>,
     pub version: McVersion,
+    pub jar_file_name: String,
 }
 
 pub trait ServerHandler {
