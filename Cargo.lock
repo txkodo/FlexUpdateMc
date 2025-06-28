@@ -1269,6 +1269,7 @@ dependencies = [
  "azalea",
  "azalea-viaversion",
  "once_cell",
+ "rust_mc_proto",
  "tokio",
  "uuid",
 ]
@@ -2610,6 +2611,16 @@ dependencies = [
  "num",
  "rand 0.8.5",
  "simple_asn1",
+]
+
+[[package]]
+name = "rust_mc_proto"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "734168f5b9aef1991db4b11c0bcd71c0336b0a5ba98269f0df39b41b8463ac8c"
+dependencies = [
+ "flate2",
+ "uuid",
 ]
 
 [[package]]
