@@ -1,0 +1,18 @@
+[package]
+name = "flex_updater_mc"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "flex_updater_mc"
+path = "src/main.rs"
+
+[dependencies]
+azalea = { git = "https://github.com/azalea-rs/azalea" }
+azalea-viaversion = { git = "https://github.com/azalea-rs/azalea-viaversion" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+once_cell = "1"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+rust_mc_proto = "0.1.19"
