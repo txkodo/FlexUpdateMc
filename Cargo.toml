@@ -1,3 +1,3 @@
 [workspace]
-members = ["bin"]
+members = ["bin", "bot"]
 resolver = "2"
