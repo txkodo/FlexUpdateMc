@@ -1,6 +1,3 @@
-[package]
-name = "flex_updater_mc"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+members = ["bin", "bot"]
+resolver = "2"

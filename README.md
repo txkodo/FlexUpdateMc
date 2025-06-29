@@ -44,10 +44,31 @@ FlexUpdateMcは、サーバーバージョンを変更する際にMinecraftワ�
 
 3. **リージョン更新**: 全ディメンション（オーバーワールド、ネザー、エンド）のリージョンファイルを上書き
 
+## プロジェクト構造
+
+このプロジェクトはCargoワークスペースとして構成されています：
+
+```
+FlexUpdateMc/
+├── Cargo.toml          # ワークスペース設定
+├── bin/                # メインのFlexUpdateMcアプリケーション
+│   ├── Cargo.toml
+│   ├── src/
+│   └── tests/
+└── bot/                # Minecraftボット関連機能
+    ├── Cargo.toml
+    └── src/
+```
+
 ## ビルド
 
 ```bash
+# 全体をビルド
 cargo build --release
+
+# 特定のクレートをビルド
+cargo build -p flex_updater_mc
+cargo build -p bot
 ```
 
 ## 使用方法
