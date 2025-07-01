@@ -16,7 +16,9 @@ pub struct McChunkPos {
 #[derive(Debug)]
 pub struct McChunk {
     pub pos: McChunkPos,
-    // Add other fields as necessary, such as blocks, entities, etc.
+    pub data: Option<crate::nbt::NbtTag>, // NBTデータとして実際のチャンクデータを保持
+    pub last_update: Option<i64>, // チャンクの最終更新時刻
+    pub inhabited_time: Option<i64>, // プレイヤーがチャンクにいた時間
 }
 
 impl Default for McChunk {
@@ -27,6 +29,9 @@ impl Default for McChunk {
                 y: 0,
                 dimension: McDimension::Overworld,
             },
+            data: None,
+            last_update: None,
+            inhabited_time: None,
         }
     }
 }
