@@ -19,6 +19,18 @@ pub struct McChunk {
     // Add other fields as necessary, such as blocks, entities, etc.
 }
 
+impl Default for McChunk {
+    fn default() -> Self {
+        McChunk {
+            pos: McChunkPos {
+                x: 0,
+                y: 0,
+                dimension: McDimension::Overworld,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McVersion {
     pub version: String,
