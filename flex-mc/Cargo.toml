@@ -1,0 +1,15 @@
+[package]
+name = "flex-mc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssmc-core = { version = "0.1.0", path = "../ssmc-core" }
+fastanvil = "0.31"
+fastnbt = "2.5"
+anyhow = "1.0.98"
+serde = "1.0.219"
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
+tempfile = "3.20.0"
+async-trait = "0.1.88"
+java-properties = "2.0.0"
