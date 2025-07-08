@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     let vfs = VirtualFs::new(url_fetcher, fs_handler);
 
     chunk_generator
-        .generate_chunks(vfs, &McVanillaVersionId::new("1.21.5".to_string()), &[])
+        .generate_chunks(vfs, &McVanillaVersionId::new("1.21.6".to_string()), &[])
         .await?;
 
     Ok(())

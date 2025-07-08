@@ -102,7 +102,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
             props.insert("online-mode".into(), "false".into());
             props.insert("max-players".into(), MAX_BOT_COUNT.to_string());
-            props.insert("port".into(), "".to_string());
+            props.insert("server-port".into(), port.to_string());
+            props.insert("gamemode".into(), "creative".to_string());
 
             let mut buffer = vec![];
             java_properties::write(&mut buffer, &props)?;
@@ -140,12 +141,12 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
         println!("Server started on {}:{}", host, port);
 
-        let bot = self.bot_spawner.spawn_bot(&host, port, version)?;
+        let bot = self.bot_spawner.spawn_bot(&host, port, version).await?;
         println!("spawn_bot");
 
         thread::sleep(Duration::from_secs(10));
 
-        stdin.write("tp bot01 0 100 0\n".as_bytes())?;
+        stdin.write("tp bot00 10000 100 10000\n".as_bytes())?;
         println!("tp");
 
         thread::sleep(Duration::from_secs(10));

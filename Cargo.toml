@@ -1,4 +1,3 @@
 [workspace]
-members = [ "flex-mc","ssmc-core","tools"] 
-exclude = ["azalea-bot"]
+members = [ "flex-mc","ssmc-core"] 
 resolver = "2"
