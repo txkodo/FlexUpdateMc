@@ -141,6 +141,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
         println!("Server started on {}:{}", host, port);
 
+        thread::sleep(Duration::from_secs(15));
+
         let bot = self.bot_spawner.spawn_bot(&host, port, version).await?;
         println!("spawn_bot");
 

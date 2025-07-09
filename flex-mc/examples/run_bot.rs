@@ -9,12 +9,9 @@ use flex_mc::infra::{
 use ssmc_core::{
     domain::McVanillaVersionId,
     infra::{
-        file_bundle_loader::DefaultFileBundleLoader,
-        fs_handler::DefaultFsHandler,
-        mc_java::{DefaultMcJavaLoader, McJavaLoader},
-        url_fetcher::{self, DefaultUrlFetcher, DummyUrlFetcher},
-        vanilla::VanillaVersionLoader,
-        virtual_fs::VirtualFs,
+        file_bundle_loader::DefaultFileBundleLoader, fs_handler::DefaultFsHandler,
+        mc_java::DefaultMcJavaLoader, url_fetcher::DefaultUrlFetcher,
+        vanilla::VanillaVersionLoader, virtual_fs::VirtualFs,
     },
 };
 
@@ -48,7 +45,7 @@ async fn main() -> Result<()> {
     let vfs = VirtualFs::new(url_fetcher, fs_handler);
 
     chunk_generator
-        .generate_chunks(vfs, &McVanillaVersionId::new("1.21.6".to_string()), &[])
+        .generate_chunks(vfs, &McVanillaVersionId::new("1.18.2".to_string()), &[])
         .await?;
 
     Ok(())

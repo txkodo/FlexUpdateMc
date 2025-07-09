@@ -1,6 +1,6 @@
 use std::{net::IpAddr, os::unix::fs::PermissionsExt, path::PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ssmc_core::domain::McVanillaVersionId;
 
@@ -22,7 +22,6 @@ pub trait BotHandle {
 pub struct AzaleaBotSpawner {
     bot_file_path: PathBuf,
     bot_id: std::sync::Arc<std::sync::Mutex<usize>>,
-    bot_version: String,
 }
 
 impl AzaleaBotSpawner {
@@ -30,15 +29,6 @@ impl AzaleaBotSpawner {
         AzaleaBotSpawner {
             bot_file_path,
             bot_id: std::sync::Arc::new(std::sync::Mutex::new(0)),
-            bot_version: "1.21.6".to_string(),
-        }
-    }
-    
-    pub fn new_with_version(bot_file_path: PathBuf, bot_version: String) -> Self {
-        AzaleaBotSpawner {
-            bot_file_path,
-            bot_id: std::sync::Arc::new(std::sync::Mutex::new(0)),
-            bot_version,
         }
     }
 }
@@ -52,7 +42,7 @@ impl BotSpawner for AzaleaBotSpawner {
         version: &McVanillaVersionId,
     ) -> Result<Box<dyn BotHandle>> {
         if !self.bot_file_path.exists() {
-            download_bot_executable(&self.bot_file_path, &self.bot_version).await?;
+            download_bot_executable(&self.bot_file_path, &version.id()).await?;
         }
         let mut command = std::process::Command::new(&self.bot_file_path);
 
@@ -100,12 +90,15 @@ impl BotHandle for AzaleaBotHandle {
             // If kill fails, the process might already be dead
             return Ok(());
         }
-        
+
         // Wait for the process to actually terminate
         match self.process.wait() {
             Ok(_) => Ok(()),
             Err(e) => {
-                eprintln!("Warning: Failed to wait for bot process to terminate: {}", e);
+                eprintln!(
+                    "Warning: Failed to wait for bot process to terminate: {}",
+                    e
+                );
                 Ok(()) // Don't fail if we can't wait
             }
         }
@@ -123,30 +116,37 @@ impl Drop for AzaleaBotHandle {
 
 async fn download_bot_executable(bot_file_path: &PathBuf, version: &str) -> Result<()> {
     let (os, arch) = get_os_and_arch()?;
-    let executable_name = format!("flex-update-mc-bot-{}-{}-{}{}", 
-        version, os, arch, 
+    let executable_name = format!(
+        "flex-update-mc-bot-{}-{}-{}{}",
+        version,
+        os,
+        arch,
         if os == "windows" { ".exe" } else { "" }
     );
-    
+
     let client = reqwest::Client::new();
     let url = format!(
-        "https://github.com/txkodo/FlexUpdateMcBot/releases/latest/download/{}",
-        executable_name
+        "https://github.com/txkodo/FlexUpdateMcBot/releases/download/mc-{}/{}",
+        version, executable_name
     );
-    
+    println!("Downloading bot executable from: {}", url);
+
     let response = client.get(&url).send().await?;
-    
+
     if !response.status().is_success() {
-        return Err(anyhow!("Failed to download bot executable: HTTP {}", response.status()));
+        return Err(anyhow!(
+            "Failed to download bot executable: HTTP {}",
+            response.status()
+        ));
     }
-    
+
     let bytes = response.bytes().await?;
     std::fs::write(bot_file_path, bytes)?;
-    
+
     let mut perms = std::fs::metadata(bot_file_path)?.permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(bot_file_path, perms)?;
-    
+
     Ok(())
 }
 
@@ -157,12 +157,12 @@ fn get_os_and_arch() -> Result<(String, String)> {
         "windows" => "windows",
         other => return Err(anyhow!("Unsupported OS: {}", other)),
     };
-    
+
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
         other => return Err(anyhow!("Unsupported architecture: {}", other)),
     };
-    
+
     Ok((os.to_string(), arch.to_string()))
 }
