@@ -12,8 +12,9 @@ use ssmc_core::{
     infra::{
         file_bundle_loader::DefaultFileBundleLoader, fs_handler::DefaultFsHandler,
         mc_java::DefaultMcJavaLoader, url_fetcher::DefaultUrlFetcher,
-        vanilla::VanillaVersionLoader, virtual_fs::VirtualFs,
+        vanilla::VanillaVersionLoader,
     },
+    util::file_trie::Dir,
 };
 
 #[tokio::main]
@@ -34,24 +35,26 @@ async fn main() -> Result<()> {
 
     let chunk_generator = DefaultChunkGenerator::new(
         VanillaVersionLoader::new(url_fetcher.clone(), java_loader),
-        Box::new(DefaultFileBundleLoader::new(
-            fs_handler.clone(),
-            url_fetcher.clone(),
-        )),
         Box::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
         Box::new(DefaultFreePortFinder),
         dim.clone(),
         unsafe { NonZeroUsize::new_unchecked(10) },
     );
 
-    let vfs = VirtualFs::new(url_fetcher, fs_handler);
+    let world_data = Dir::new();
 
     let chunks: Vec<ChunkPos> = (-100..100)
         .flat_map(|x| (-100..100).map(move |z| ChunkPos::new(x, z)))
         .collect();
 
     chunk_generator
-        .generate_chunks(vfs, &McVanillaVersionId::new("1.21.5".to_string()), &chunks)
+        .generate_chunks(
+            world_data,
+            fs_handler,
+            url_fetcher,
+            &McVanillaVersionId::new("1.21.5".to_string()),
+            &chunks,
+        )
         .await?;
 
     Ok(())

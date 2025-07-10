@@ -2,16 +2,17 @@ use anyhow::Result;
 use itertools::Itertools;
 use java_properties;
 use ssmc_core::{
-    domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
+    domain::{FileBundle, FileEntry, FileSource, McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
-        file_bundle_loader::FileBundleLoader,
+        fs_handler::FsHandler, 
+        url_fetcher::UrlFetcher,
         vanilla::{McVanillaVersion, McVanillaVersionType, VanillaVersionLoader},
-        virtual_fs::{VirtualEntryType, VirtualFs, VirtualPath},
     },
+    util::file_trie::{Dir, Entry, File, Path as VirtualPath},
 };
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
     path::PathBuf,
@@ -27,11 +28,184 @@ use crate::infra::{
     region_loader::{ChunkPos, RegionPos},
 };
 
+// ヘルパー関数：DirからFileBundleに変換
+fn dir_to_file_bundle(dir: &Dir) -> Result<FileBundle> {
+    let mut entries = Vec::new();
+    collect_entries_from_dir(&VirtualPath::new(), dir, &mut entries)?;
+    Ok(FileBundle::new(entries))
+}
+
+fn collect_entries_from_dir(base_path: &VirtualPath, dir: &Dir, entries: &mut Vec<FileEntry>) -> Result<()> {
+    if !base_path.is_empty() {
+        let path_str = base_path.components().join("/");
+        let path_buf = std::path::PathBuf::from(path_str);
+        let dir_entry = FileEntry::new(path_buf, false, FileSource::Directory());
+        entries.push(dir_entry);
+    }
+    
+    for (name, child_entry) in dir.iter() {
+        let mut child_path = base_path.clone();
+        child_path.push(name);
+        
+        match child_entry {
+            Entry::File(file) => {
+                let path_str = child_path.components().join("/");
+                let path_buf = std::path::PathBuf::from(path_str);
+                
+                let file_source = match file {
+                    File::Inline(data) => FileSource::InMemory(data.clone()),
+                    File::Path(path) => FileSource::LocalPath(path.clone()),
+                    File::Url(url) => FileSource::RemoteUrl(url.clone()),
+                };
+                let file_entry = FileEntry::new(path_buf, false, file_source);
+                entries.push(file_entry);
+            }
+            Entry::Dir(child_dir) => {
+                collect_entries_from_dir(&child_path, child_dir, entries)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ヘルパー関数：FileBundleからDirに変換
+fn file_bundle_to_dir(bundle: &FileBundle) -> Result<Dir> {
+    let mut dir = Dir::new();
+    
+    for entry in bundle.entries() {
+        let path = VirtualPath::from_str(&entry.rel_path().to_string_lossy());
+        
+        match entry.source() {
+            FileSource::Directory() => {
+                dir.put_dir(path, Dir::new())
+                    .map_err(|_| anyhow::anyhow!("Failed to create directory"))?;
+            }
+            FileSource::InMemory(data) => {
+                let file = File::Inline(data.clone());
+                dir.put_file(path, file)
+                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
+            }
+            FileSource::LocalPath(path_buf) => {
+                let file = File::Path(path_buf.clone());
+                dir.put_file(path, file)
+                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
+            }
+            FileSource::RemoteUrl(url) => {
+                let file = File::Url(url.clone());
+                dir.put_file(path, file)
+                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
+            }
+        }
+    }
+    Ok(dir)
+}
+
+// ヘルパー関数：ファイルの内容を読み取る
+async fn read_file_content(
+    dir: &Dir, 
+    path: &VirtualPath, 
+    fs_handler: &dyn FsHandler, 
+    url_fetcher: &dyn UrlFetcher
+) -> Result<Vec<u8>> {
+    let file = dir.get_file(path.clone())
+        .ok_or_else(|| anyhow::anyhow!("File not found: {:?}", path))?;
+
+    match file {
+        File::Inline(data) => Ok(data.clone()),
+        File::Path(path_buf) => {
+            fs_handler.read(path_buf)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
+        }
+        File::Url(url) => {
+            url_fetcher.fetch_binary(url).await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))
+        }
+    }
+}
+
+// ヘルパー関数：ファイルの存在確認
+fn file_exists(dir: &Dir, path: &VirtualPath) -> bool {
+    match dir.get(path.clone()) {
+        Some(Entry::File(_)) => true,
+        _ => false,
+    }
+}
+
+// ヘルパー関数：ファイルを書き込み
+fn write_file_content(dir: &mut Dir, path: &VirtualPath, data: &[u8]) -> Result<()> {
+    let file = File::Inline(data.to_vec());
+    dir.put_file(path.clone(), file)
+        .map_err(|_| anyhow::anyhow!("Failed to write file"))?;
+    Ok(())
+}
+
+// ヘルパー関数：物理ファイルシステムにマウント
+async fn mount_to_physical_fs(
+    dir: &Dir, 
+    base_path: &std::path::Path, 
+    fs_handler: &dyn FsHandler, 
+    url_fetcher: &dyn UrlFetcher
+) -> Result<()> {
+    mount_dir_to_physical_fs(base_path, &VirtualPath::new(), dir, fs_handler, url_fetcher).await
+}
+
+fn mount_dir_to_physical_fs<'a>(
+    base_path: &'a std::path::Path, 
+    rel_path: &'a VirtualPath, 
+    dir: &'a Dir,
+    fs_handler: &'a dyn FsHandler, 
+    url_fetcher: &'a dyn UrlFetcher
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        if !rel_path.is_empty() {
+            let path_str = rel_path.components().join("/");
+            let physical_path = base_path.join(&path_str);
+            println!("Mounting directory {} to {}", path_str, physical_path.display());
+            fs_handler.mkdir(&physical_path)
+                .map_err(|e| anyhow::anyhow!("Failed to create directory: {}", e))?;
+        }
+        
+        for (name, child_entry) in dir.iter() {
+            let mut child_path = rel_path.clone();
+            child_path.push(name);
+            
+            match child_entry {
+                Entry::File(file) => {
+                    let path_str = child_path.components().join("/");
+                    let physical_path = base_path.join(&path_str);
+                    
+                    let data = match file {
+                        File::Inline(data) => data.clone(),
+                        File::Path(path_buf) => {
+                            fs_handler.read(path_buf)
+                                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?
+                        }
+                        File::Url(url) => {
+                            url_fetcher.fetch_binary(url).await
+                                .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))?
+                        }
+                    };
+                    
+                    println!("Mounting file {} to {}", path_str, physical_path.display());
+                    fs_handler.write(&physical_path, &data, false)
+                        .map_err(|e| anyhow::anyhow!("Failed to write file: {}", e))?;
+                }
+                Entry::Dir(child_dir) => {
+                    mount_dir_to_physical_fs(base_path, &child_path, child_dir, fs_handler, url_fetcher).await?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 #[async_trait::async_trait]
 pub trait ChunkGenerator {
     async fn generate_chunks(
         &self,
-        world_data: VirtualFs,
+        world_data: Dir,
+        fs_handler: Box<dyn FsHandler + Send + Sync>,
+        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()>;
@@ -39,7 +213,6 @@ pub trait ChunkGenerator {
 
 pub struct DefaultChunkGenerator {
     version_loader: VanillaVersionLoader,
-    file_bundle_loader: Box<dyn FileBundleLoader + Send + Sync>,
     bot_spawner: Box<dyn BotSpawner + Send + Sync>,
     free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
     work_dir: PathBuf,
@@ -49,7 +222,6 @@ pub struct DefaultChunkGenerator {
 impl DefaultChunkGenerator {
     pub fn new(
         version_loader: VanillaVersionLoader,
-        file_bundle_loader: Box<dyn FileBundleLoader + Send + Sync>,
         bot_spawner: Box<dyn BotSpawner + Send + Sync>,
         free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
         work_dir: PathBuf,
@@ -57,7 +229,6 @@ impl DefaultChunkGenerator {
     ) -> Self {
         DefaultChunkGenerator {
             version_loader,
-            file_bundle_loader,
             bot_spawner,
             free_port_finder,
             work_dir,
@@ -70,7 +241,9 @@ impl DefaultChunkGenerator {
 impl ChunkGenerator for DefaultChunkGenerator {
     async fn generate_chunks(
         &self,
-        mut world_data: VirtualFs,
+        mut world_data: Dir,
+        fs_handler: Box<dyn FsHandler + Send + Sync>,
+        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
@@ -80,7 +253,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
             let (filebundle, command_factory) = self
                 .version_loader
                 .ready_server(
-                    world_data.export_to_file_bundle()?,
+                    dir_to_file_bundle(&world_data)?,
                     &McVanillaVersion {
                         version: McVanillaVersionId::new(version.id().to_string()),
                         version_type: McVanillaVersionType::Release,
@@ -92,16 +265,15 @@ impl ChunkGenerator for DefaultChunkGenerator {
             (filebundle, command)
         };
 
-        world_data.clear();
-        world_data.load_file_bundle(&filebundle)?;
+        world_data = file_bundle_to_dir(&filebundle)?;
 
         let host = [127, 0, 0, 1].into();
         let port = self.free_port_finder.find_free_port(host)?;
         {
             let properties_path = VirtualPath::from_str("server.properties");
             let mut props = {
-                if world_data.get_entry_type(&properties_path) == Some(VirtualEntryType::File) {
-                    let properties = world_data.read_file_content(&properties_path).await?;
+                if file_exists(&world_data, &properties_path) {
+                    let properties = read_file_content(&world_data, &properties_path, &*fs_handler, &*url_fetcher).await?;
                     java_properties::read(Cursor::new(properties))?
                 } else {
                     HashMap::new()
@@ -116,18 +288,18 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
             let mut buffer = vec![];
             java_properties::write(&mut buffer, &props)?;
-            world_data.write_file_content(&properties_path, &buffer, 0o644)?;
+            write_file_content(&mut world_data, &properties_path, &buffer)?;
         }
         {
-            world_data.write_file_content(
+            write_file_content(
+                &mut world_data,
                 &VirtualPath::from_str("eula.txt"),
                 "eula=true".as_bytes(),
-                0o644,
             )?;
         }
 
         let tmpdir = self.work_dir.join("server");
-        world_data.mount_to_physical_fs(&tmpdir).await?;
+        mount_to_physical_fs(&world_data, &tmpdir, &*fs_handler, &*url_fetcher).await?;
 
         println!("Starting server at {:?}", &tmpdir);
         println!("Starting server at {:?}", &command);
@@ -243,7 +415,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
         child.kill()?;
         child.wait()?;
 
-        let join = thread.join();
+        let _join = thread.join();
 
         Ok(())
     }

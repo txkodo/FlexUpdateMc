@@ -271,10 +271,6 @@ impl<'a> Iterator for IterAll<'a> {
     }
 }
 
-pub trait EntryHandler {
-    fn mount(path: &Path) -> Vec<u8>;
-    fn load_content(file: &File) -> Vec<u8>;
-}
 
 #[cfg(test)]
 mod tests {

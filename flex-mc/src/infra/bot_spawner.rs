@@ -28,14 +28,12 @@ pub trait BotHandle: Sync + Send {
 
 pub struct AzaleaBotSpawner {
     bot_file_path: PathBuf,
-    bot_id: std::sync::Arc<std::sync::Mutex<usize>>,
 }
 
 impl AzaleaBotSpawner {
     pub fn new(bot_file_path: PathBuf) -> Self {
         AzaleaBotSpawner {
             bot_file_path,
-            bot_id: std::sync::Arc::new(std::sync::Mutex::new(0)),
         }
     }
 }
