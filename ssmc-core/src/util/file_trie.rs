@@ -216,6 +216,7 @@ impl Dir {
     }
 }
 
+#[derive(Debug)]
 pub enum Error {
     PathConflict,
 }

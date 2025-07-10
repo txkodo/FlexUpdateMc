@@ -2,7 +2,7 @@ use anyhow::Result;
 use itertools::Itertools;
 use java_properties;
 use ssmc_core::{
-    domain::{FileBundle, FileEntry, FileSource, McServerLoader, McVanillaVersionId, ServerRunOptions},
+    domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
         fs_handler::FsHandler, 
         url_fetcher::UrlFetcher,
@@ -28,77 +28,6 @@ use crate::infra::{
     region_loader::{ChunkPos, RegionPos},
 };
 
-// ヘルパー関数：DirからFileBundleに変換
-fn dir_to_file_bundle(dir: &Dir) -> Result<FileBundle> {
-    let mut entries = Vec::new();
-    collect_entries_from_dir(&VirtualPath::new(), dir, &mut entries)?;
-    Ok(FileBundle::new(entries))
-}
-
-fn collect_entries_from_dir(base_path: &VirtualPath, dir: &Dir, entries: &mut Vec<FileEntry>) -> Result<()> {
-    if !base_path.is_empty() {
-        let path_str = base_path.components().join("/");
-        let path_buf = std::path::PathBuf::from(path_str);
-        let dir_entry = FileEntry::new(path_buf, false, FileSource::Directory());
-        entries.push(dir_entry);
-    }
-    
-    for (name, child_entry) in dir.iter() {
-        let mut child_path = base_path.clone();
-        child_path.push(name);
-        
-        match child_entry {
-            Entry::File(file) => {
-                let path_str = child_path.components().join("/");
-                let path_buf = std::path::PathBuf::from(path_str);
-                
-                let file_source = match file {
-                    File::Inline(data) => FileSource::InMemory(data.clone()),
-                    File::Path(path) => FileSource::LocalPath(path.clone()),
-                    File::Url(url) => FileSource::RemoteUrl(url.clone()),
-                };
-                let file_entry = FileEntry::new(path_buf, false, file_source);
-                entries.push(file_entry);
-            }
-            Entry::Dir(child_dir) => {
-                collect_entries_from_dir(&child_path, child_dir, entries)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-// ヘルパー関数：FileBundleからDirに変換
-fn file_bundle_to_dir(bundle: &FileBundle) -> Result<Dir> {
-    let mut dir = Dir::new();
-    
-    for entry in bundle.entries() {
-        let path = VirtualPath::from_str(&entry.rel_path().to_string_lossy());
-        
-        match entry.source() {
-            FileSource::Directory() => {
-                dir.put_dir(path, Dir::new())
-                    .map_err(|_| anyhow::anyhow!("Failed to create directory"))?;
-            }
-            FileSource::InMemory(data) => {
-                let file = File::Inline(data.clone());
-                dir.put_file(path, file)
-                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
-            }
-            FileSource::LocalPath(path_buf) => {
-                let file = File::Path(path_buf.clone());
-                dir.put_file(path, file)
-                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
-            }
-            FileSource::RemoteUrl(url) => {
-                let file = File::Url(url.clone());
-                dir.put_file(path, file)
-                    .map_err(|_| anyhow::anyhow!("Failed to create file"))?;
-            }
-        }
-    }
-    Ok(dir)
-}
 
 // ヘルパー関数：ファイルの内容を読み取る
 async fn read_file_content(
@@ -249,11 +178,11 @@ impl ChunkGenerator for DefaultChunkGenerator {
     ) -> Result<()> {
         let quad_chunks = BTreeSet::from_iter(chunk_list.iter().map(QuadChunkPos::from_chunk));
 
-        let (filebundle, mut command) = {
-            let (filebundle, command_factory) = self
+        let (new_world_data, mut command) = {
+            let (new_world_data, command_factory) = self
                 .version_loader
                 .ready_server(
-                    dir_to_file_bundle(&world_data)?,
+                    world_data,
                     &McVanillaVersion {
                         version: McVanillaVersionId::new(version.id().to_string()),
                         version_type: McVanillaVersionType::Release,
@@ -262,10 +191,10 @@ impl ChunkGenerator for DefaultChunkGenerator {
                 .await
                 .map_err(|x| anyhow::anyhow!(x))?;
             let command = command_factory(ServerRunOptions::default());
-            (filebundle, command)
+            (new_world_data, command)
         };
 
-        world_data = file_bundle_to_dir(&filebundle)?;
+        world_data = new_world_data;
 
         let host = [127, 0, 0, 1].into();
         let port = self.free_port_finder.find_free_port(host)?;

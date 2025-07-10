@@ -1,6 +1,7 @@
 use crate::{
-    domain::{FileBundle, FileEntry, FileSource, McServerLoader, McVanillaVersionId, McVersion},
+    domain::{McServerLoader, McVanillaVersionId, McVersion},
     infra::{mc_java::McJavaLoader, url_fetcher::UrlFetcher},
+    util::file_trie::{Dir, File, Path},
 };
 use serde::Deserialize;
 use url::Url;
@@ -49,11 +50,11 @@ impl McServerLoader for VanillaVersionLoader {
     type Version = McVanillaVersion;
     async fn ready_server(
         &self,
-        mut world_data: FileBundle,
+        mut world_data: Dir,
         version: &Self::Version,
     ) -> Result<
         (
-            FileBundle,
+            Dir,
             Box<dyn Fn(crate::domain::ServerRunOptions) -> std::process::Command>,
         ),
         String,
@@ -93,13 +94,9 @@ impl McServerLoader for VanillaVersionLoader {
         let server_url =
             Url::parse(&server_download.url).map_err(|e| format!("Invalid server URL: {}", e))?;
 
-        let server_file = FileEntry::new(
-            "server.jar".into(),
-            false,
-            FileSource::RemoteUrl(server_url),
-        );
-
-        world_data.add_entry(server_file);
+        let server_file = File::Url(server_url);
+        world_data.put_file(Path::from_str("server.jar"), server_file)
+            .map_err(|_| "Failed to add server.jar to world data".to_string())?;
 
         // Step 5: Get Java runtime path
         // Determine required Java version from version details
@@ -438,7 +435,7 @@ mod tests {
         let loader = create_test_loader(url_fetcher);
         let result = loader
             .ready_server(
-                FileBundle::new(vec![]), // Empty world data for this test
+                Dir::new(), // Empty world data for this test
                 &McVanillaVersion {
                     version: McVanillaVersionId::new("1.20.1".to_string()),
                     version_type: McVanillaVersionType::Release,
@@ -447,13 +444,10 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        let (file_bundle, command_factory) = result.unwrap();
+        let (world_data, command_factory) = result.unwrap();
 
-        // Check file bundle
-        assert_eq!(file_bundle.entries().len(), 1);
-        let entry = &file_bundle.entries()[0];
-        assert_eq!(entry.rel_path().to_str().unwrap(), "server.jar");
-        assert!(!entry.executable());
+        // Check that server.jar was added to world data
+        assert!(world_data.get_file(Path::from_str("server.jar")).is_some());
 
         // Check command factory
         let options = crate::domain::ServerRunOptions {
@@ -495,7 +489,7 @@ mod tests {
         let loader = create_test_loader(url_fetcher);
         let result = loader
             .ready_server(
-                FileBundle::new(vec![]), // Empty world data for this test
+                Dir::new(), // Empty world data for this test
                 &McVanillaVersion {
                     version: McVanillaVersionId::new("1.19.4".to_string()),
                     version_type: McVanillaVersionType::Release,
@@ -546,7 +540,7 @@ mod tests {
         let loader = create_test_loader(url_fetcher);
         let result = loader
             .ready_server(
-                FileBundle::new(vec![]), // Empty world data for this test
+                Dir::new(), // Empty world data for this test
                 &McVanillaVersion {
                     version: McVanillaVersionId::new("1.20.1".to_string()),
                     version_type: McVanillaVersionType::Release,
@@ -601,7 +595,7 @@ mod tests {
         let loader = create_test_loader(url_fetcher);
         let result = loader
             .ready_server(
-                FileBundle::new(vec![]), // Empty world data for this test
+                Dir::new(), // Empty world data for this test
                 &McVanillaVersion {
                     version: McVanillaVersionId::new("1.20.1".to_string()),
                     version_type: McVanillaVersionType::Release,
@@ -675,17 +669,15 @@ mod tests {
         let loader = create_test_loader(url_fetcher);
 
         // Create initial world data with some files
-        let world_file1 = FileEntry::new(
-            "level.dat".into(),
-            false,
-            FileSource::InMemory(b"world data".to_vec()),
-        );
-        let world_file2 = FileEntry::new(
-            "region/r.0.0.mca".into(),
-            false,
-            FileSource::InMemory(b"region data".to_vec()),
-        );
-        let initial_world_data = FileBundle::new(vec![world_file1, world_file2]);
+        let mut initial_world_data = Dir::new();
+        initial_world_data.put_file(
+            Path::from_str("level.dat"),
+            File::Inline(b"world data".to_vec())
+        ).unwrap();
+        initial_world_data.put_file(
+            Path::from_str("region/r.0.0.mca"), 
+            File::Inline(b"region data".to_vec())
+        ).unwrap();
 
         let result = loader
             .ready_server(
@@ -700,30 +692,18 @@ mod tests {
         assert!(result.is_ok());
         let (final_world_data, _command_factory) = result.unwrap();
 
-        // Check that the final world data contains the original files plus server.jar
-        assert_eq!(final_world_data.entries().len(), 3);
-
-        let entries = final_world_data.entries();
-        
         // Check for original world files
-        let level_dat = entries
-            .iter()
-            .find(|e| e.rel_path().to_str().unwrap() == "level.dat")
+        let level_dat = final_world_data.get_file(Path::from_str("level.dat"))
             .expect("level.dat should be present");
-        assert!(matches!(level_dat.source(), FileSource::InMemory(_)));
+        assert!(matches!(level_dat, File::Inline(_)));
 
-        let region_file = entries
-            .iter()
-            .find(|e| e.rel_path().to_str().unwrap() == "region/r.0.0.mca")
+        let region_file = final_world_data.get_file(Path::from_str("region/r.0.0.mca"))
             .expect("region file should be present");
-        assert!(matches!(region_file.source(), FileSource::InMemory(_)));
+        assert!(matches!(region_file, File::Inline(_)));
 
         // Check for added server.jar
-        let server_jar = entries
-            .iter()
-            .find(|e| e.rel_path().to_str().unwrap() == "server.jar")
+        let server_jar = final_world_data.get_file(Path::from_str("server.jar"))
             .expect("server.jar should be added to world data");
-        assert!(!server_jar.executable());
-        assert!(matches!(server_jar.source(), FileSource::RemoteUrl(_)));
+        assert!(matches!(server_jar, File::Url(_)));
     }
 }

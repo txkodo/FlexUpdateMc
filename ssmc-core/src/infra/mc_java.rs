@@ -1,6 +1,7 @@
-use crate::domain::{FileBundle, FileEntry, McVanillaVersionId};
-use crate::infra::file_bundle_loader::FileBundleLoader;
+use crate::domain::McVanillaVersionId;
+use crate::infra::trie_loader::TrieLoader;
 use crate::infra::url_fetcher::UrlFetcher;
+use crate::util::file_trie::{Dir, File, Path};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -17,7 +18,7 @@ pub trait McJavaLoader {
 
 pub struct DefaultMcJavaLoader {
     url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-    file_bundle_loader: Box<dyn FileBundleLoader + Send + Sync>,
+    trie_loader: Box<dyn TrieLoader + Send + Sync>,
     cache_path: PathBuf,
 }
 
@@ -68,12 +69,12 @@ impl McJava {
 impl DefaultMcJavaLoader {
     pub fn new(
         url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-        file_bundle_loader: Box<dyn FileBundleLoader + Send + Sync>,
+        trie_loader: Box<dyn TrieLoader + Send + Sync>,
         cache_path: PathBuf,
     ) -> Self {
         Self {
             url_fetcher,
-            file_bundle_loader,
+            trie_loader,
             cache_path,
         }
     }
@@ -129,39 +130,36 @@ impl DefaultMcJavaLoader {
             let manifest: ManifestResponse = serde_json::from_slice(&manifest_data)
                 .map_err(|e| format!("Failed to parse manifest JSON: {}", e))?;
 
-            let mut file_entries = Vec::new();
+            let mut trie = Dir::new();
 
             for (path, file_info) in manifest.files {
-                let file_entry = match file_info {
+                match file_info {
                     ManifestFile::File {
                         downloads,
-                        executable,
+                        executable: _,
                     } => {
                         if let Some(raw_download) = downloads.raw {
                             let url = Url::parse(&raw_download.url)
                                 .map_err(|e| format!("Invalid file URL: {}", e))?;
-                            FileEntry::new(
-                                path.into(),
-                                executable.unwrap_or(false),
-                                crate::domain::FileSource::RemoteUrl(url),
-                            )
-                        } else {
-                            continue;
+                            let file = File::Url(url);
+                            let virtual_path = Path::from_str(&path);
+                            trie.put_file(virtual_path, file)
+                                .map_err(|_| format!("Failed to add file {} to trie", path))?;
                         }
                     }
                     ManifestFile::Directory {} => {
-                        FileEntry::new(path.into(), false, crate::domain::FileSource::Directory())
+                        let virtual_path = Path::from_str(&path);
+                        trie.put_dir(virtual_path, Dir::new())
+                            .map_err(|_| format!("Failed to add directory {} to trie", path))?;
                     }
-                };
-                file_entries.push(file_entry);
+                }
             }
 
-            let file_bundle = FileBundle::new(file_entries);
-
             // Download and install the runtime
-            self.file_bundle_loader
-                .write_contents(&file_bundle, &runtime_path)
-                .await?;
+            self.trie_loader
+                .write_contents(&trie, &runtime_path)
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         let java_executable = fs::canonicalize(&java_executable)
@@ -285,7 +283,7 @@ struct DownloadInfo {
 #[cfg(test)]
 mod tests {
     use crate::infra::{
-        file_bundle_loader::DefaultFileBundleLoader, fs_handler::DefaultFsHandler,
+        trie_loader::DefaultTrieLoader, fs_handler::DefaultFsHandler,
         url_fetcher::DummyUrlFetcher,
     };
 
@@ -303,7 +301,7 @@ mod tests {
 
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
-            Box::new(DefaultFileBundleLoader::new(
+            Box::new(DefaultTrieLoader::new(
                 Box::new(DefaultFsHandler::new()),
                 Box::new(DummyUrlFetcher::new()),
             )),
@@ -338,7 +336,7 @@ mod tests {
 
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
-            Box::new(DefaultFileBundleLoader::new(
+            Box::new(DefaultTrieLoader::new(
                 Box::new(DefaultFsHandler::new()),
                 Box::new(file_url_fetcher),
             )),
@@ -372,7 +370,7 @@ mod tests {
 
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
-            Box::new(DefaultFileBundleLoader::new(
+            Box::new(DefaultTrieLoader::new(
                 Box::new(DefaultFsHandler::new()),
                 Box::new(DummyUrlFetcher::new()),
             )),
@@ -390,7 +388,7 @@ mod tests {
     fn test_extract_major_version() {
         let loader = DefaultMcJavaLoader::new(
             Box::new(DummyUrlFetcher::new()),
-            Box::new(DefaultFileBundleLoader::new(
+            Box::new(DefaultTrieLoader::new(
                 Box::new(DefaultFsHandler::new()),
                 Box::new(DummyUrlFetcher::new()),
             )),
