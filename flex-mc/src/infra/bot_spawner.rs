@@ -1,7 +1,13 @@
-use std::{net::IpAddr, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{
+    io::{BufRead, BufReader},
+    net::IpAddr,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use serde::Deserialize;
 use ssmc_core::domain::McVanillaVersionId;
 
 #[async_trait]
@@ -11,10 +17,11 @@ pub trait BotSpawner {
         host: &IpAddr,
         port: u16,
         version: &McVanillaVersionId,
+        name: &str,
     ) -> Result<Box<dyn BotHandle>>;
 }
 
-pub trait BotHandle {
+pub trait BotHandle: Sync + Send {
     fn name(&self) -> String;
     fn stop(self: Box<Self>) -> Result<()>;
 }
@@ -33,6 +40,13 @@ impl AzaleaBotSpawner {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "event")]
+enum BotEvent {
+    #[serde(rename = "login")]
+    Login {},
+}
+
 #[async_trait]
 impl BotSpawner for AzaleaBotSpawner {
     async fn spawn_bot(
@@ -40,36 +54,39 @@ impl BotSpawner for AzaleaBotSpawner {
         host: &IpAddr,
         port: u16,
         version: &McVanillaVersionId,
+        name: &str,
     ) -> Result<Box<dyn BotHandle>> {
         if !self.bot_file_path.exists() {
             download_bot_executable(&self.bot_file_path, &version.id()).await?;
         }
         let mut command = std::process::Command::new(&self.bot_file_path);
 
-        let bot_id = {
-            let mut id = self.bot_id.lock().unwrap();
-            let current_id = *id;
-            *id += 1;
-            current_id
-        };
-        let username = format!("bot{:02}", bot_id);
+        command
+            .args([name, &host.to_string(), &port.to_string()])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        command.args([
-            "--username",
-            &username,
-            "--host",
-            &host.to_string(),
-            "--port",
-            &port.to_string(),
-            "--version",
-            version.id(),
-        ]);
+        let mut child = command.spawn()?;
 
-        let child = command.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
+
+        // ログイン完了まで待機
+        while let Some(Ok(line)) = BufReader::new(stdout).lines().next() {
+            let event: BotEvent = serde_json::from_str(&line)?;
+            match event {
+                BotEvent::Login {} => {
+                    println!("Bot {} logged in successfully", name);
+                    break;
+                }
+            }
+        }
 
         Ok(Box::new(AzaleaBotHandle {
             process: child,
-            name: username,
+            name: name.to_string(),
         }))
     }
 }
@@ -126,7 +143,7 @@ async fn download_bot_executable(bot_file_path: &PathBuf, version: &str) -> Resu
 
     let client = reqwest::Client::new();
     let url = format!(
-        "https://github.com/txkodo/FlexUpdateMcBot/releases/download/mc-{}/{}",
+        "https://github.com/txkodo/FlexUpdateMcBot/releases/download/v{}/{}",
         version, executable_name
     );
     println!("Downloading bot executable from: {}", url);

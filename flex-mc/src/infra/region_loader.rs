@@ -97,7 +97,7 @@ impl Chunk {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegionPos {
     pub x: isize,
     pub z: isize,

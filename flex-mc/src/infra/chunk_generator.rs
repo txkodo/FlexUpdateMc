@@ -1,13 +1,5 @@
-use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, Cursor, Write},
-    path::PathBuf,
-    process::Stdio,
-    thread,
-    time::Duration,
-};
-
 use anyhow::Result;
+use itertools::Itertools;
 use java_properties;
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
@@ -17,9 +9,22 @@ use ssmc_core::{
         virtual_fs::{VirtualEntryType, VirtualFs, VirtualPath},
     },
 };
+use std::{
+    cmp::Ordering,
+    collections::{BTreeSet, HashMap, HashSet},
+    io::{BufRead, BufReader, Cursor, Write},
+    num::NonZeroUsize,
+    path::PathBuf,
+    process::Stdio,
+    thread,
+    time::Duration,
+    vec,
+};
 
 use crate::infra::{
-    bot_spawner::BotSpawner, free_port_finder::FreePortFinder, region_loader::ChunkPos,
+    bot_spawner::BotSpawner,
+    free_port_finder::FreePortFinder,
+    region_loader::{ChunkPos, RegionPos},
 };
 
 #[async_trait::async_trait]
@@ -38,6 +43,7 @@ pub struct DefaultChunkGenerator {
     bot_spawner: Box<dyn BotSpawner + Send + Sync>,
     free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
     work_dir: PathBuf,
+    max_bot_count: NonZeroUsize,
 }
 
 impl DefaultChunkGenerator {
@@ -47,6 +53,7 @@ impl DefaultChunkGenerator {
         bot_spawner: Box<dyn BotSpawner + Send + Sync>,
         free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
         work_dir: PathBuf,
+        max_bot_count: NonZeroUsize,
     ) -> Self {
         DefaultChunkGenerator {
             version_loader,
@@ -54,11 +61,10 @@ impl DefaultChunkGenerator {
             bot_spawner,
             free_port_finder,
             work_dir,
+            max_bot_count,
         }
     }
 }
-
-static MAX_BOT_COUNT: usize = 100;
 
 #[async_trait::async_trait]
 impl ChunkGenerator for DefaultChunkGenerator {
@@ -68,6 +74,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
+        let quad_chunks = BTreeSet::from_iter(chunk_list.iter().map(QuadChunkPos::from_chunk));
+
         let (filebundle, mut command) = {
             let (filebundle, command_factory) = self
                 .version_loader
@@ -100,10 +108,11 @@ impl ChunkGenerator for DefaultChunkGenerator {
                 }
             };
 
-            props.insert("online-mode".into(), "false".into());
-            props.insert("max-players".into(), MAX_BOT_COUNT.to_string());
+            props.insert("online-mode".into(), "false".to_string());
+            props.insert("max-players".into(), self.max_bot_count.to_string());
             props.insert("server-port".into(), port.to_string());
             props.insert("gamemode".into(), "creative".to_string());
+            props.insert("allow-flight".into(), "true".to_string());
 
             let mut buffer = vec![];
             java_properties::write(&mut buffer, &props)?;
@@ -130,38 +139,156 @@ impl ChunkGenerator for DefaultChunkGenerator {
         let mut stdin = child.stdin.take().unwrap();
 
         let stdout = child.stdout.take().unwrap();
-        let thread = thread::spawn(move || -> Result<()> {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let line = line?;
-                println!("{}", line);
+        let mut lines = BufReader::new(stdout).lines();
+        while let Some(line) = lines.next() {
+            {
+                if let Ok(line) = line {
+                    if line.ends_with("For help, type \"help\"") {
+                        break;
+                    }
+                }
             }
-            Ok(())
-        });
+        }
+        let thread = thread::spawn(move || -> Result<()> { Ok(()) });
 
-        println!("Server started on {}:{}", host, port);
+        let mut bots = vec![];
 
-        thread::sleep(Duration::from_secs(15));
+        for idx in 0..self.max_bot_count.get() {
+            let bot = self
+                .bot_spawner
+                .spawn_bot(&host, port, version, &format!("bot{:02}", idx))
+                .await?;
+            bots.push(bot);
+        }
 
-        let bot = self.bot_spawner.spawn_bot(&host, port, version).await?;
-        println!("spawn_bot");
+        let quad_chunks_iter = quad_chunks.iter().chunks(self.max_bot_count.into());
 
-        thread::sleep(Duration::from_secs(10));
+        let start_time = std::time::Instant::now();
+        let mut processesd_qchunk_count = 0;
+        let total_qchunk_count = quad_chunks.len();
+        let mut processesd_chunk_batch_count = 0;
+        for chunk_batch in &quad_chunks_iter {
+            let mean_batch_process_millisec = if processesd_chunk_batch_count > 10 {
+                start_time.elapsed().as_millis() / processesd_chunk_batch_count
+            } else {
+                50
+            };
 
-        stdin.write("tp bot00 10000 100 10000\n".as_bytes())?;
-        println!("tp");
+            let chunks = chunk_batch.collect::<Vec<_>>();
+            // チャンクを生成するために、各ボットを適切な位置にテレポート
+            for (idx, chunk) in chunks.iter().enumerate() {
+                let (x, z) = chunk.center_block_pos();
+                stdin.write(format!("tp bot{:02} {} 100 {}\n", idx, x, z).as_bytes())?;
+            }
+            stdin.flush()?;
 
-        thread::sleep(Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(
+                mean_batch_process_millisec as u64 / 2,
+            ));
 
-        bot.stop()?;
+            'wait_gen: loop {
+                for chunk in chunks.iter() {
+                    let (x, z) = chunk.center_block_pos();
+                    let min_pos = format!("{} 100 {}", x - 1, z - 1);
+                    let max_pos = format!("{} 100 {}", x, z);
+                    let command =
+                        format!("clone {} {} {} replace force\n", min_pos, max_pos, min_pos);
+                    stdin.write(command.as_bytes())?;
+                }
+                stdin.flush()?;
+
+                let mut success_count = 0;
+                let mut failure_count = 0;
+                while let Some(line) = lines.next() {
+                    if let Ok(line) = line {
+                        if line.ends_with("That position is not loaded") {
+                            failure_count += 1;
+                        }
+                        if line.contains("Successfully cloned 4 block") {
+                            success_count += 1;
+                        }
+                        if (success_count + failure_count) == chunks.len() {
+                            if failure_count == 0 {
+                                break 'wait_gen;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            processesd_qchunk_count += chunks.len();
+            println!(
+                "Chunk batch generation {}/{} [mean: {}ms]",
+                processesd_qchunk_count, total_qchunk_count, mean_batch_process_millisec
+            );
+            processesd_chunk_batch_count += 1;
+        }
+        let elapsed = start_time.elapsed();
+
+        println!(
+            "Chunk generation completed in {:.2?}. {:.2}it/s",
+            elapsed,
+            (chunk_list.len() as f32 / elapsed.as_secs_f32())
+        );
+
+        stdin.write("save-all\n".as_bytes())?;
+
+        thread::sleep(Duration::from_secs(30));
+
+        for bot in bots {
+            bot.stop()?;
+        }
 
         child.kill()?;
         child.wait()?;
 
-        thread.join();
-
-        tmpdir;
+        let join = thread.join();
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct QuadChunkPos {
+    x: isize,
+    z: isize,
+}
+
+impl PartialOrd for QuadChunkPos {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp_private(other))
+    }
+}
+impl Ord for QuadChunkPos {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_private(other)
+    }
+}
+
+impl QuadChunkPos {
+    pub fn from_chunk(chunk_pos: &ChunkPos) -> Self {
+        QuadChunkPos {
+            x: chunk_pos.x.div_euclid(2),
+            z: chunk_pos.z.div_euclid(2),
+        }
+    }
+
+    pub fn region_pos(&self) -> RegionPos {
+        RegionPos::new(self.x.div_euclid(16), self.z.div_euclid(16))
+    }
+
+    fn cmp_private(&self, other: &Self) -> Ordering {
+        match self.region_pos().cmp(&other.region_pos()) {
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Less => Ordering::Less,
+            Ordering::Equal => (self.x, self.z).cmp(&(other.x, other.z)),
+        }
+    }
+
+    fn center_block_pos(&self) -> (isize, isize) {
+        let bx = self.x * 32 + 16;
+        let bz = self.z * 32 + 16;
+        (bx, bz)
     }
 }

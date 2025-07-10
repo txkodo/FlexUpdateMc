@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::PathBuf};
 
 use anyhow::Result;
 use flex_mc::infra::{
     bot_spawner::AzaleaBotSpawner,
     chunk_generator::{ChunkGenerator, DefaultChunkGenerator},
     free_port_finder::DefaultFreePortFinder,
+    region_loader::ChunkPos,
 };
 use ssmc_core::{
     domain::McVanillaVersionId,
@@ -40,12 +41,17 @@ async fn main() -> Result<()> {
         Box::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
         Box::new(DefaultFreePortFinder),
         dim.clone(),
+        unsafe { NonZeroUsize::new_unchecked(10) },
     );
 
     let vfs = VirtualFs::new(url_fetcher, fs_handler);
 
+    let chunks: Vec<ChunkPos> = (-100..100)
+        .flat_map(|x| (-100..100).map(move |z| ChunkPos::new(x, z)))
+        .collect();
+
     chunk_generator
-        .generate_chunks(vfs, &McVanillaVersionId::new("1.18.2".to_string()), &[])
+        .generate_chunks(vfs, &McVanillaVersionId::new("1.21.5".to_string()), &chunks)
         .await?;
 
     Ok(())
