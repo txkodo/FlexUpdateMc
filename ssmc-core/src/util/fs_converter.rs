@@ -24,9 +24,7 @@ impl FsToTrieConverter {
 
     /// 単一ファイルを読み込んでFileを作成
     pub fn load_file(&self, physical_path: &StdPath) -> Result<File> {
-        let data = self.fs_handler.read(physical_path)
-            .map_err(|e| anyhow::anyhow!("Failed to read file {}: {}", physical_path.display(), e))?;
-        Ok(File::Inline(data))
+        Ok(File::Path(physical_path.to_path_buf()))
     }
 
     fn load_directory_recursive(
@@ -39,33 +37,25 @@ impl FsToTrieConverter {
             .map_err(|e| anyhow::anyhow!("Failed to list directory {}: {}", current_path.display(), e))?;
 
         for entry_path in entries {
-            let relative_path = entry_path.strip_prefix(base_path)
-                .map_err(|e| anyhow::anyhow!("Failed to get relative path: {}", e))?;
-            
-            if relative_path.as_os_str().is_empty() {
-                continue; // Skip the base directory itself
-            }
+            // Use only the file/directory name, not the full path
+            let name = entry_path.file_name()
+                .ok_or_else(|| anyhow::anyhow!("No file name found"))?
+                .to_string_lossy()
+                .to_string();
+            let virtual_path = Path::from(vec![name]);
 
-            let path_components: Vec<String> = relative_path
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect();
-            let virtual_path = Path::from(path_components);
-
-            // Check if this is a directory by trying to list its contents
-            if self.fs_handler.list_entries(&entry_path).is_ok() {
+            // Check if this is a file or directory using efficient existence check
+            if self.fs_handler.is_file(&entry_path) {
+                // It's a file
+                let file = File::Path(entry_path.to_path_buf());
+                dir.put_file(virtual_path, file)
+                    .map_err(|_| anyhow::anyhow!("Failed to add file to trie"))?;
+            } else if self.fs_handler.is_dir(&entry_path) {
                 // It's a directory
                 let mut subdir = Dir::new();
                 self.load_directory_recursive(base_path, &entry_path, &mut subdir)?;
                 dir.put_dir(virtual_path, subdir)
                     .map_err(|_| anyhow::anyhow!("Failed to add directory to trie"))?;
-            } else {
-                // It's a file
-                let data = self.fs_handler.read(&entry_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read file {}: {}", entry_path.display(), e))?;
-                let file = File::Inline(data);
-                dir.put_file(virtual_path, file)
-                    .map_err(|_| anyhow::anyhow!("Failed to add file to trie"))?;
             }
         }
 
@@ -190,6 +180,7 @@ mod tests {
         // Convert FS to Trie
         let fs_to_trie = FsToTrieConverter::new(fs_handler.clone());
         let dir = fs_to_trie.load_directory(&PathBuf::from("/")).unwrap();
+
 
         // Verify trie content
         assert!(dir.get_file(Path::from_str("test.txt")).is_some());

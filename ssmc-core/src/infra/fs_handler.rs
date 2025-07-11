@@ -10,6 +10,8 @@ pub trait FsHandler: Send + Sync {
     fn read(&self, path: &Path) -> Result<Vec<u8>, String>;
     fn write(&self, path: &Path, data: &[u8], executable: bool) -> Result<(), String>;
     fn delete(&self, path: &Path) -> Result<(), String>;
+    fn is_file(&self, path: &Path) -> bool;
+    fn is_dir(&self, path: &Path) -> bool;
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +80,14 @@ impl FsHandler for DefaultFsHandler {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove file {}: {}", path.display(), e))
         }
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
     }
 }
 
@@ -252,6 +262,20 @@ impl FsHandler for OnMemoryFsHandler {
         }
 
         Ok(())
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.files
+            .read()
+            .map(|files| files.contains_key(path))
+            .unwrap_or(false)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.directories
+            .read()
+            .map(|directories| directories.contains_key(path))
+            .unwrap_or(false)
     }
 }
 
