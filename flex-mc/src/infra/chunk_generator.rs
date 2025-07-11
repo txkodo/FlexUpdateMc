@@ -4,7 +4,7 @@ use java_properties;
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
-        fs_handler::FsHandler, 
+        fs_handler::FsHandler,
         url_fetcher::UrlFetcher,
         vanilla::{McVanillaVersion, McVanillaVersionType, VanillaVersionLoader},
     },
@@ -12,12 +12,12 @@ use ssmc_core::{
 };
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
+    collections::{BTreeSet, HashMap, HashSet},
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
     path::PathBuf,
     process::Stdio,
+    sync::Arc,
     thread,
     time::Duration,
     vec,
@@ -29,27 +29,26 @@ use crate::infra::{
     region_loader::{ChunkPos, RegionPos},
 };
 
-
 // ヘルパー関数：ファイルの内容を読み取る
 async fn read_file_content(
-    dir: &Dir, 
-    path: &VirtualPath, 
-    fs_handler: &dyn FsHandler, 
-    url_fetcher: &dyn UrlFetcher
+    dir: &Dir,
+    path: &VirtualPath,
+    fs_handler: &dyn FsHandler,
+    url_fetcher: &dyn UrlFetcher,
 ) -> Result<Vec<u8>> {
-    let file = dir.get_file(path.clone())
+    let file = dir
+        .get_file(path.clone())
         .ok_or_else(|| anyhow::anyhow!("File not found: {:?}", path))?;
 
     match file {
         File::Inline(data) => Ok(data.clone()),
-        File::Path(path_buf) => {
-            fs_handler.read(path_buf)
-                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))
-        }
-        File::Url(url) => {
-            url_fetcher.fetch_binary(url).await
-                .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))
-        }
+        File::Path(path_buf) => fs_handler
+            .read(path_buf)
+            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e)),
+        File::Url(url) => url_fetcher
+            .fetch_binary(url)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e)),
     }
 }
 
@@ -71,57 +70,69 @@ fn write_file_content(dir: &mut Dir, path: &VirtualPath, data: &[u8]) -> Result<
 
 // ヘルパー関数：物理ファイルシステムにマウント
 async fn mount_to_physical_fs(
-    dir: &Dir, 
-    base_path: &std::path::Path, 
-    fs_handler: &dyn FsHandler, 
-    url_fetcher: &dyn UrlFetcher
+    dir: &Dir,
+    base_path: &std::path::Path,
+    fs_handler: &dyn FsHandler,
+    url_fetcher: &dyn UrlFetcher,
 ) -> Result<()> {
     mount_dir_to_physical_fs(base_path, &VirtualPath::new(), dir, fs_handler, url_fetcher).await
 }
 
 fn mount_dir_to_physical_fs<'a>(
-    base_path: &'a std::path::Path, 
-    rel_path: &'a VirtualPath, 
+    base_path: &'a std::path::Path,
+    rel_path: &'a VirtualPath,
     dir: &'a Dir,
-    fs_handler: &'a dyn FsHandler, 
-    url_fetcher: &'a dyn UrlFetcher
+    fs_handler: &'a dyn FsHandler,
+    url_fetcher: &'a dyn UrlFetcher,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
         if !rel_path.is_empty() {
             let path_str = rel_path.components().join("/");
             let physical_path = base_path.join(&path_str);
-            println!("Mounting directory {} to {}", path_str, physical_path.display());
-            fs_handler.mkdir(&physical_path)
+            println!(
+                "Mounting directory {} to {}",
+                path_str,
+                physical_path.display()
+            );
+            fs_handler
+                .mkdir(&physical_path)
                 .map_err(|e| anyhow::anyhow!("Failed to create directory: {}", e))?;
         }
-        
+
         for (name, child_entry) in dir.iter() {
             let mut child_path = rel_path.clone();
             child_path.push(name);
-            
+
             match child_entry {
                 Entry::File(file) => {
                     let path_str = child_path.components().join("/");
                     let physical_path = base_path.join(&path_str);
-                    
+
                     let data = match file {
                         File::Inline(data) => data.clone(),
-                        File::Path(path_buf) => {
-                            fs_handler.read(path_buf)
-                                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?
-                        }
-                        File::Url(url) => {
-                            url_fetcher.fetch_binary(url).await
-                                .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))?
-                        }
+                        File::Path(path_buf) => fs_handler
+                            .read(path_buf)
+                            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?,
+                        File::Url(url) => url_fetcher
+                            .fetch_binary(url)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))?,
                     };
-                    
+
                     println!("Mounting file {} to {}", path_str, physical_path.display());
-                    fs_handler.write(&physical_path, &data, false)
+                    fs_handler
+                        .write(&physical_path, &data, false)
                         .map_err(|e| anyhow::anyhow!("Failed to write file: {}", e))?;
                 }
                 Entry::Dir(child_dir) => {
-                    mount_dir_to_physical_fs(base_path, &child_path, child_dir, fs_handler, url_fetcher).await?;
+                    mount_dir_to_physical_fs(
+                        base_path,
+                        &child_path,
+                        child_dir,
+                        fs_handler,
+                        url_fetcher,
+                    )
+                    .await?;
                 }
             }
         }
@@ -177,6 +188,9 @@ impl ChunkGenerator for DefaultChunkGenerator {
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
+        // ボットを中心に 41 x 41 チャンクが生成される
+        let view_distance = 20;
+
         let quad_chunks = BTreeSet::from_iter(chunk_list.iter().map(QuadChunkPos::from_chunk));
 
         let (new_world_data, mut command) = {
@@ -203,7 +217,13 @@ impl ChunkGenerator for DefaultChunkGenerator {
             let properties_path = VirtualPath::from_str("server.properties");
             let mut props = {
                 if file_exists(&world_data, &properties_path) {
-                    let properties = read_file_content(&world_data, &properties_path, &*fs_handler, &*url_fetcher).await?;
+                    let properties = read_file_content(
+                        &world_data,
+                        &properties_path,
+                        &*fs_handler,
+                        &*url_fetcher,
+                    )
+                    .await?;
                     java_properties::read(Cursor::new(properties))?
                 } else {
                     HashMap::new()
@@ -213,6 +233,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
             props.insert("online-mode".into(), "false".to_string());
             props.insert("max-players".into(), self.max_bot_count.to_string());
             props.insert("server-port".into(), port.to_string());
+            props.insert("view-distance".into(), view_distance.to_string());
             props.insert("gamemode".into(), "creative".to_string());
             props.insert("allow-flight".into(), "true".to_string());
 
@@ -251,101 +272,38 @@ impl ChunkGenerator for DefaultChunkGenerator {
                 }
             }
         }
-        let thread = thread::spawn(move || -> Result<()> { Ok(()) });
 
-        let mut bots = vec![];
+        let chunk_groups = group_chunks(chunk_list.to_vec(), view_distance);
 
-        for idx in 0..self.max_bot_count.get() {
-            let bot = self
+        for (idx, (center, chunks)) in chunk_groups.into_iter().enumerate() {
+            let mut chunks: HashSet<_> = chunks.into_iter().collect();
+            let botname = format!("bot{:02}", idx);
+            let (bot, rx) = self
                 .bot_spawner
-                .spawn_bot(&host, port, version, &format!("bot{:02}", idx))
+                .spawn_bot(&host, port, &version, &botname)
                 .await?;
-            bots.push(bot);
-        }
-
-        let quad_chunks_iter = quad_chunks.iter().chunks(self.max_bot_count.into());
-
-        let start_time = std::time::Instant::now();
-        let mut processesd_qchunk_count = 0;
-        let total_qchunk_count = quad_chunks.len();
-        let mut processesd_chunk_batch_count = 0;
-        for chunk_batch in &quad_chunks_iter {
-            let mean_batch_process_millisec = if processesd_chunk_batch_count > 10 {
-                start_time.elapsed().as_millis() / processesd_chunk_batch_count
-            } else {
-                50
-            };
-
-            let chunks = chunk_batch.collect::<Vec<_>>();
-            // チャンクを生成するために、各ボットを適切な位置にテレポート
-            for (idx, chunk) in chunks.iter().enumerate() {
-                let (x, z) = chunk.center_block_pos();
-                stdin.write(format!("tp bot{:02} {} 100 {}\n", idx, x, z).as_bytes())?;
-            }
+            stdin.write(
+                format!(
+                    "tp {} {} 100 {}\n",
+                    botname,
+                    center.x * 16 + 8,
+                    center.z * 16 + 8
+                )
+                .as_bytes(),
+            )?;
             stdin.flush()?;
-
-            thread::sleep(Duration::from_millis(
-                mean_batch_process_millisec as u64 / 2,
-            ));
-
-            'wait_gen: loop {
-                for chunk in chunks.iter() {
-                    let (x, z) = chunk.center_block_pos();
-                    let min_pos = format!("{} 100 {}", x - 1, z - 1);
-                    let max_pos = format!("{} 100 {}", x, z);
-                    let command =
-                        format!("clone {} {} {} replace force\n", min_pos, max_pos, min_pos);
-                    stdin.write(command.as_bytes())?;
-                }
-                stdin.flush()?;
-
-                let mut success_count = 0;
-                let mut failure_count = 0;
-                while let Some(line) = lines.next() {
-                    if let Ok(line) = line {
-                        if line.ends_with("That position is not loaded") {
-                            failure_count += 1;
-                        }
-                        if line.contains("Successfully cloned 4 block") {
-                            success_count += 1;
-                        }
-                        if (success_count + failure_count) == chunks.len() {
-                            if failure_count == 0 {
-                                break 'wait_gen;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
+            for (x, z) in rx {
+                chunks.remove(&ChunkPos::new(x as isize, z as isize));
+                if chunks.is_empty() {
+                    break;
                 }
             }
-            processesd_qchunk_count += chunks.len();
-            println!(
-                "Chunk batch generation {}/{} [mean: {}ms]",
-                processesd_qchunk_count, total_qchunk_count, mean_batch_process_millisec
-            );
-            processesd_chunk_batch_count += 1;
-        }
-        let elapsed = start_time.elapsed();
-
-        println!(
-            "Chunk generation completed in {:.2?}. {:.2}it/s",
-            elapsed,
-            (chunk_list.len() as f32 / elapsed.as_secs_f32())
-        );
-
-        stdin.write("save-all\n".as_bytes())?;
-
-        thread::sleep(Duration::from_secs(30));
-
-        for bot in bots {
             bot.stop()?;
         }
 
-        child.kill()?;
+        stdin.write("stop\n".as_bytes())?;
+        stdin.flush()?;
         child.wait()?;
-
-        let _join = thread.join();
 
         Ok(())
     }
@@ -393,4 +351,24 @@ impl QuadChunkPos {
         let bz = self.z * 32 + 16;
         (bx, bz)
     }
+}
+
+fn group_chunks(chunks: Vec<ChunkPos>, render_distance: usize) -> Vec<(ChunkPos, Vec<ChunkPos>)> {
+    let mut groups = HashMap::<ChunkPos, Vec<ChunkPos>>::new();
+
+    let box_size = (render_distance * 2 + 1) as isize;
+
+    for chunk in chunks {
+        let x = (chunk.x + render_distance as isize).div_euclid(box_size);
+        let z = (chunk.z + render_distance as isize).div_euclid(box_size);
+        let center_chunk = ChunkPos::new(x, z);
+        groups
+            .entry(center_chunk)
+            .or_insert_with(Vec::new)
+            .push(chunk);
+    }
+    return groups
+        .into_iter()
+        .map(|(center, chunks)| (center, chunks))
+        .collect();
 }

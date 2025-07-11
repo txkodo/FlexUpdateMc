@@ -3,6 +3,8 @@ use std::{
     net::IpAddr,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
+    sync::mpsc,
+    thread,
 };
 
 use anyhow::{Result, anyhow};
@@ -18,10 +20,10 @@ pub trait BotSpawner {
         port: u16,
         version: &McVanillaVersionId,
         name: &str,
-    ) -> Result<Box<dyn BotHandle>>;
+    ) -> Result<(Box<dyn BotHandle>, mpsc::Receiver<(i32, i32)>)>;
 }
 
-pub trait BotHandle: Sync + Send {
+pub trait BotHandle: Send {
     fn name(&self) -> String;
     fn stop(self: Box<Self>) -> Result<()>;
 }
@@ -32,17 +34,19 @@ pub struct AzaleaBotSpawner {
 
 impl AzaleaBotSpawner {
     pub fn new(bot_file_path: PathBuf) -> Self {
-        AzaleaBotSpawner {
-            bot_file_path,
-        }
+        AzaleaBotSpawner { bot_file_path }
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "event")]
-enum BotEvent {
-    #[serde(rename = "login")]
-    Login {},
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+pub enum BotEvent {
+    #[serde(rename = "spawn")]
+    Spawn {},
+    #[serde(rename = "disconnect")]
+    Disconnect { reason: String },
+    #[serde(rename = "chunk")]
+    Chunk { x: i32, z: i32 },
 }
 
 #[async_trait]
@@ -53,7 +57,7 @@ impl BotSpawner for AzaleaBotSpawner {
         port: u16,
         version: &McVanillaVersionId,
         name: &str,
-    ) -> Result<Box<dyn BotHandle>> {
+    ) -> Result<(Box<dyn BotHandle>, mpsc::Receiver<(i32, i32)>)> {
         if !self.bot_file_path.exists() {
             download_bot_executable(&self.bot_file_path, &version.id()).await?;
         }
@@ -66,26 +70,69 @@ impl BotSpawner for AzaleaBotSpawner {
 
         let mut child = command.spawn()?;
 
+        let (tx, rx) = mpsc::channel::<(i32, i32)>();
+
         let stdout = child
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
+        let mut lines = BufReader::new(stdout).lines();
+
+        let name_clone = name.to_string();
+        let tx_clone = tx.clone();
 
         // ログイン完了まで待機
-        while let Some(Ok(line)) = BufReader::new(stdout).lines().next() {
+        let mut logged_in = false;
+        while let Some(Ok(line)) = lines.next() {
             let event: BotEvent = serde_json::from_str(&line)?;
             match event {
-                BotEvent::Login {} => {
+                BotEvent::Spawn {} => {
                     println!("Bot {} logged in successfully", name);
+                    logged_in = true;
                     break;
+                }
+                BotEvent::Disconnect { reason } => {
+                    return Err(anyhow!("Bot {} disconnected: {}", name, reason));
+                }
+                BotEvent::Chunk { x, z } => {
+                    tx.send((x, z)).unwrap();
                 }
             }
         }
 
-        Ok(Box::new(AzaleaBotHandle {
+        if !logged_in {
+            return Err(anyhow!("Bot {} failed to log in", name));
+        }
+
+        // ログイン完了後も継続してイベントを処理するスレッドを起動
+        thread::spawn(move || {
+            while let Some(Ok(line)) = lines.next() {
+                if let Ok(event) = serde_json::from_str::<BotEvent>(&line) {
+                    match event {
+                        BotEvent::Chunk { x, z } => {
+                            if tx_clone.send((x, z)).is_err() {
+                                // レシーバーが閉じられた場合はスレッドを終了
+                                break;
+                            }
+                        }
+                        BotEvent::Disconnect { reason } => {
+                            println!("Bot {} disconnected: {}", name_clone, reason);
+                            break;
+                        }
+                        BotEvent::Spawn {} => {
+                            // Already logged in, ignore
+                        }
+                    }
+                }
+            }
+        });
+
+        let handle = Box::new(AzaleaBotHandle {
             process: child,
             name: name.to_string(),
-        }))
+        });
+
+        Ok((handle, rx))
     }
 }
 

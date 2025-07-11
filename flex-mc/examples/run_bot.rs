@@ -56,5 +56,7 @@ async fn main() -> Result<()> {
         )
         .await?;
 
+    println!("チャンク生成完了！");
+
     Ok(())
 }
