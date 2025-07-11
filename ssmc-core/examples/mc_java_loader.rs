@@ -9,10 +9,10 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Create HTTP URL fetcher for real API calls
-    let url_fetcher = Box::new(DefaultUrlFetcher);
+    let url_fetcher = Arc::new(DefaultUrlFetcher);
     let loader = DefaultMcJavaLoader::new(
         url_fetcher,
-        Box::new(DefaultTrieLoader::new(
+        Arc::new(DefaultTrieLoader::new(
             Arc::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
             Arc::new(DefaultUrlFetcher),
         )),

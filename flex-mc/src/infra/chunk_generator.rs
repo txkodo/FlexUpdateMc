@@ -13,6 +13,7 @@ use ssmc_core::{
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashMap},
+    sync::Arc,
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
     path::PathBuf,
@@ -133,8 +134,8 @@ pub trait ChunkGenerator {
     async fn generate_chunks(
         &self,
         world_data: Dir,
-        fs_handler: Box<dyn FsHandler + Send + Sync>,
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
+        fs_handler: Arc<dyn FsHandler + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()>;
@@ -171,8 +172,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
     async fn generate_chunks(
         &self,
         mut world_data: Dir,
-        fs_handler: Box<dyn FsHandler + Send + Sync>,
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
+        fs_handler: Arc<dyn FsHandler + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {

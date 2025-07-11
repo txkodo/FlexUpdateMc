@@ -18,8 +18,8 @@ pub trait McJavaLoader {
 }
 
 pub struct DefaultMcJavaLoader {
-    url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-    trie_loader: Box<dyn TrieLoader + Send + Sync>,
+    url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
+    trie_loader: Arc<dyn TrieLoader + Send + Sync>,
     cache_path: PathBuf,
 }
 
@@ -69,8 +69,8 @@ impl McJava {
 
 impl DefaultMcJavaLoader {
     pub fn new(
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-        trie_loader: Box<dyn TrieLoader + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
+        trie_loader: Arc<dyn TrieLoader + Send + Sync>,
         cache_path: PathBuf,
     ) -> Self {
         Self {
@@ -301,8 +301,8 @@ mod tests {
         url_fetcher.add_data(url, mock_response.as_bytes());
 
         let loader = DefaultMcJavaLoader::new(
-            Box::new(url_fetcher),
-            Box::new(DefaultTrieLoader::new(
+            Arc::new(url_fetcher),
+            Arc::new(DefaultTrieLoader::new(
                 Arc::new(DefaultFsHandler::new()),
                 Arc::new(DummyUrlFetcher::new()),
             )),
@@ -336,8 +336,8 @@ mod tests {
         );
 
         let loader = DefaultMcJavaLoader::new(
-            Box::new(url_fetcher),
-            Box::new(DefaultTrieLoader::new(
+            Arc::new(url_fetcher),
+            Arc::new(DefaultTrieLoader::new(
                 Arc::new(DefaultFsHandler::new()),
                 Arc::new(file_url_fetcher),
             )),
@@ -370,8 +370,8 @@ mod tests {
         url_fetcher.add_data(url, mock_response.as_bytes());
 
         let loader = DefaultMcJavaLoader::new(
-            Box::new(url_fetcher),
-            Box::new(DefaultTrieLoader::new(
+            Arc::new(url_fetcher),
+            Arc::new(DefaultTrieLoader::new(
                 Arc::new(DefaultFsHandler::new()),
                 Arc::new(DummyUrlFetcher::new()),
             )),
@@ -388,8 +388,8 @@ mod tests {
     #[test]
     fn test_extract_major_version() {
         let loader = DefaultMcJavaLoader::new(
-            Box::new(DummyUrlFetcher::new()),
-            Box::new(DefaultTrieLoader::new(
+            Arc::new(DummyUrlFetcher::new()),
+            Arc::new(DefaultTrieLoader::new(
                 Arc::new(DefaultFsHandler::new()),
                 Arc::new(DummyUrlFetcher::new()),
             )),

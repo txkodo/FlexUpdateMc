@@ -22,11 +22,11 @@ async fn main() -> Result<()> {
 
     let fs_handler = Arc::new(DefaultFsHandler::new());
     let url_fetcher = Arc::new(DefaultUrlFetcher);
-    let trie_loader = Box::new(DefaultTrieLoader::new(
+    let trie_loader = Arc::new(DefaultTrieLoader::new(
         fs_handler.clone(),
         url_fetcher.clone(),
     ));
-    let java_loader = Box::new(DefaultMcJavaLoader::new(
+    let java_loader = Arc::new(DefaultMcJavaLoader::new(
         url_fetcher.clone(),
         trie_loader,
         dim.join("java"),
@@ -49,8 +49,8 @@ async fn main() -> Result<()> {
     chunk_generator
         .generate_chunks(
             world_data,
-            fs_handler,
-            url_fetcher,
+            fs_handler.clone(),
+            url_fetcher.clone(),
             &McVanillaVersionId::new("1.21.5".to_string()),
             &chunks,
         )

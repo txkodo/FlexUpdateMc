@@ -14,10 +14,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("=== Vanilla Minecraft Server Loader Example ===\n");
 
     // Create dependencies
-    let url_fetcher = Box::new(DefaultUrlFetcher);
-    let java_loader = Box::new(DefaultMcJavaLoader::new(
-        Box::new(DefaultUrlFetcher),
-        Box::new(DefaultTrieLoader::new(
+    let url_fetcher = Arc::new(DefaultUrlFetcher);
+    let java_loader = Arc::new(DefaultMcJavaLoader::new(
+        Arc::new(DefaultUrlFetcher),
+        Arc::new(DefaultTrieLoader::new(
             Arc::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
             Arc::new(DefaultUrlFetcher),
         )),

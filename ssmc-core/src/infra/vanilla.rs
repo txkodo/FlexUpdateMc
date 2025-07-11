@@ -4,6 +4,7 @@ use crate::{
     util::file_trie::{Dir, File, Path},
 };
 use serde::Deserialize;
+use std::sync::Arc;
 use url::Url;
 
 pub enum McVanillaVersionType {
@@ -29,14 +30,14 @@ pub enum McVanillaVersionQuery {
 }
 
 pub struct VanillaVersionLoader {
-    url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-    java_loader: Box<dyn McJavaLoader + Send + Sync>,
+    url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
+    java_loader: Arc<dyn McJavaLoader + Send + Sync>,
 }
 
 impl VanillaVersionLoader {
     pub fn new(
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
-        java_loader: Box<dyn McJavaLoader + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
+        java_loader: Arc<dyn McJavaLoader + Send + Sync>,
     ) -> Self {
         Self {
             url_fetcher,
@@ -243,7 +244,7 @@ mod tests {
     }
 
     fn create_test_loader(url_fetcher: DummyUrlFetcher) -> VanillaVersionLoader {
-        VanillaVersionLoader::new(Box::new(url_fetcher), Box::new(DummyJavaLoader))
+        VanillaVersionLoader::new(Arc::new(url_fetcher), Arc::new(DummyJavaLoader))
     }
 
     #[tokio::test]
