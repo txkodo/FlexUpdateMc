@@ -86,12 +86,14 @@ impl From<&[&str]> for Path {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum File {
     Inline(Vec<u8>),
     Url(Url),
     Path(path::PathBuf),
 }
 
+#[derive(Debug, Clone)]
 pub struct Dir(HashMap<String, Entry>);
 
 impl Dir {
@@ -136,7 +138,7 @@ impl Dir {
     }
 
     pub fn put(&mut self, path: impl Into<Path>, entry: Entry) -> Result<(), Error> {
-        let vpath = path.into();
+        let vpath: Path = path.into();
         let components = vpath.components();
 
         if components.is_empty() {
@@ -145,9 +147,6 @@ impl Dir {
 
         if components.len() == 1 {
             let key = &components[0];
-            if self.0.contains_key(key) {
-                return Err(Error::PathConflict);
-            }
             self.0.insert(key.clone(), entry);
             Ok(())
         } else {
@@ -156,7 +155,9 @@ impl Dir {
             // Get or create intermediate directory
             let intermediate_dir = match self.0.get_mut(first) {
                 Some(Entry::Dir(dir)) => dir,
-                Some(Entry::File(_)) => return Err(Error::PathConflict),
+                Some(Entry::File(_)) => {
+                    return Err(Error::PathConflict);
+                }
                 None => {
                     // Create intermediate directory
                     self.0.insert(first.clone(), Entry::Dir(Dir::new()));
@@ -221,6 +222,7 @@ pub enum Error {
     PathConflict,
 }
 
+#[derive(Debug, Clone)]
 pub enum Entry {
     File(File),
     Dir(Dir),
@@ -271,7 +273,6 @@ impl<'a> Iterator for IterAll<'a> {
         None
     }
 }
-
 
 #[cfg(test)]
 mod tests {

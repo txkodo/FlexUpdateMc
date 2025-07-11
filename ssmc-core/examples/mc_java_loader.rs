@@ -1,6 +1,6 @@
 use ssmc_core::domain::McVanillaVersionId;
-use ssmc_core::infra::file_bundle_loader::DefaultFileBundleLoader;
 use ssmc_core::infra::mc_java::{DefaultMcJavaLoader, McJavaLoader};
+use ssmc_core::infra::trie_loader::DefaultTrieLoader;
 use ssmc_core::infra::url_fetcher::DefaultUrlFetcher;
 use std::error::Error;
 use std::time::Instant;
@@ -11,11 +11,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let url_fetcher = Box::new(DefaultUrlFetcher);
     let loader = DefaultMcJavaLoader::new(
         url_fetcher,
-        Box::new(DefaultFileBundleLoader::new(
+        Box::new(DefaultTrieLoader::new(
             Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
             Box::new(DefaultUrlFetcher),
         )),
-        std::path::PathBuf::from("temp_workspace/java-cache")
+        std::path::PathBuf::from("temp_workspace/java-cache"),
     );
 
     println!("Fetching Java runtime list from Mojang API...");
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\nInstalling Java runtime...");
     let start_time = Instant::now();
-    
+
     let java_path = loader
         .ready_runtime(&McVanillaVersionId::new("java-runtime-alpha".to_string()))
         .await?;

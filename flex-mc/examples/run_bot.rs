@@ -10,9 +10,8 @@ use flex_mc::infra::{
 use ssmc_core::{
     domain::McVanillaVersionId,
     infra::{
-        file_bundle_loader::DefaultFileBundleLoader, fs_handler::DefaultFsHandler,
-        mc_java::DefaultMcJavaLoader, url_fetcher::DefaultUrlFetcher,
-        vanilla::VanillaVersionLoader,
+        fs_handler::DefaultFsHandler, mc_java::DefaultMcJavaLoader, trie_loader::DefaultTrieLoader,
+        url_fetcher::DefaultUrlFetcher, vanilla::VanillaVersionLoader,
     },
     util::file_trie::Dir,
 };
@@ -23,13 +22,13 @@ async fn main() -> Result<()> {
 
     let fs_handler = Box::new(DefaultFsHandler::new());
     let url_fetcher = Box::new(DefaultUrlFetcher);
-    let file_bundle_loader = Box::new(DefaultFileBundleLoader::new(
+    let trie_loader = Box::new(DefaultTrieLoader::new(
         fs_handler.clone(),
         url_fetcher.clone(),
     ));
     let java_loader = Box::new(DefaultMcJavaLoader::new(
         url_fetcher.clone(),
-        file_bundle_loader,
+        trie_loader,
         dim.join("java"),
     ));
 

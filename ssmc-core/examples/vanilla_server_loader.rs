@@ -1,8 +1,9 @@
-use ssmc_core::domain::{FileBundle, McServerLoader, McVersionQuerier, ServerRunOptions};
-use ssmc_core::infra::file_bundle_loader::{DefaultFileBundleLoader, FileBundleLoader};
+use ssmc_core::domain::{McServerLoader, McVersionQuerier, ServerRunOptions};
 use ssmc_core::infra::mc_java::DefaultMcJavaLoader;
+use ssmc_core::infra::trie_loader::{DefaultTrieLoader, TrieLoader};
 use ssmc_core::infra::url_fetcher::DefaultUrlFetcher;
 use ssmc_core::infra::vanilla::{McVanillaVersionQuery, VanillaVersionLoader};
+use ssmc_core::util::file_trie::Dir;
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,7 +16,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let url_fetcher = Box::new(DefaultUrlFetcher);
     let java_loader = Box::new(DefaultMcJavaLoader::new(
         Box::new(DefaultUrlFetcher),
-        Box::new(DefaultFileBundleLoader::new(
+        Box::new(DefaultTrieLoader::new(
             Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
             Box::new(DefaultUrlFetcher),
         )),
@@ -49,9 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let start_time = Instant::now();
 
     // Step 3: Prepare the server (download jar and setup Java)
-    let (file_bundle, command_factory) = loader
-        .ready_server(FileBundle::new(vec![]), target_version)
-        .await?;
+    let (dir, command_factory) = loader.ready_server(Dir::new(), target_version).await?;
 
     let setup_time = start_time.elapsed();
     println!(
@@ -69,15 +68,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         std::fs::remove_dir_all(&output_dir)?;
     }
 
-    let file_loader = DefaultFileBundleLoader::new(
+    let trie_loader = DefaultTrieLoader::new(
         Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
         Box::new(DefaultUrlFetcher),
     );
 
     let write_start = Instant::now();
-    file_loader
-        .write_contents(&file_bundle, &output_dir)
-        .await?;
+    trie_loader.write_contents(&dir, &output_dir).await?;
     let write_time = write_start.elapsed();
 
     println!(
@@ -85,12 +82,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         write_time.as_secs_f64()
     );
     println!("📂 Server files saved to: {:?}", output_dir);
-
-    // Step 5: Show what files were created
-    println!("\n📋 Files in bundle:");
-    for entry in file_bundle.entries() {
-        println!("  - {}", entry.rel_path().display());
-    }
 
     // Step 6: Generate sample command
     println!("\n🚀 Sample server startup commands:");
