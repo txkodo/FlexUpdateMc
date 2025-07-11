@@ -1,5 +1,4 @@
 use anyhow::Result;
-use itertools::Itertools;
 use java_properties;
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
@@ -12,14 +11,12 @@ use ssmc_core::{
 };
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
     path::PathBuf,
     process::Stdio,
-    sync::Arc,
-    thread,
-    time::Duration,
+    sync::{Arc, Mutex},
     vec,
 };
 
@@ -191,7 +188,6 @@ impl ChunkGenerator for DefaultChunkGenerator {
         // ボットを中心に 41 x 41 チャンクが生成される
         let view_distance = 20;
 
-        let quad_chunks = BTreeSet::from_iter(chunk_list.iter().map(QuadChunkPos::from_chunk));
 
         let (new_world_data, mut command) = {
             let (new_world_data, command_factory) = self
@@ -259,7 +255,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
-        let mut stdin = child.stdin.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
 
         let stdout = child.stdout.take().unwrap();
         let mut lines = BufReader::new(stdout).lines();
@@ -274,35 +270,68 @@ impl ChunkGenerator for DefaultChunkGenerator {
         }
 
         let chunk_groups = group_chunks(chunk_list.to_vec(), view_distance);
-
+        let stdin_shared = Arc::new(Mutex::new(stdin));
+        
+        // 並列でボットタスクを実行
+        let mut tasks = vec![];
+        
+        // 並列処理のために、spawn_botを各タスクで非同期実行
         for (idx, (center, chunks)) in chunk_groups.into_iter().enumerate() {
-            let mut chunks: HashSet<_> = chunks.into_iter().collect();
+            let chunks: HashSet<_> = chunks.into_iter().collect();
             let botname = format!("bot{:02}", idx);
+            let stdin_clone = stdin_shared.clone();
+            let host = host.clone();
+            let port = port;
+            let version = version.clone();
+
             let (bot, rx) = self
                 .bot_spawner
                 .spawn_bot(&host, port, &version, &botname)
                 .await?;
-            stdin.write(
-                format!(
-                    "tp {} {} 100 {}\n",
-                    botname,
-                    center.x * 16 + 8,
-                    center.z * 16 + 8
-                )
-                .as_bytes(),
-            )?;
-            stdin.flush()?;
-            for (x, z) in rx {
-                chunks.remove(&ChunkPos::new(x as isize, z as isize));
-                if chunks.is_empty() {
-                    break;
+            
+            let task = tokio::spawn(async move {
+                // ボットをテレポート
+                {
+                    let mut stdin_guard = stdin_clone.lock().unwrap();
+                    stdin_guard.write(
+                        format!(
+                            "tp {} {} 100 {}\n",
+                            botname,
+                            center.x * 16 + 8,
+                            center.z * 16 + 8
+                        )
+                        .as_bytes(),
+                    )?;
+                    stdin_guard.flush()?;
                 }
-            }
-            bot.stop()?;
+                
+                // チャンクイベントを待機
+                let mut remaining_chunks = chunks;
+                for (x, z) in rx {
+                    remaining_chunks.remove(&ChunkPos::new(x as isize, z as isize));
+                    if remaining_chunks.is_empty() {
+                        break;
+                    }
+                }
+                
+                bot.stop()?;
+                Ok::<(), anyhow::Error>(())
+            });
+            
+            tasks.push(task);
+        }
+        
+        // すべてのタスクの完了を待機
+        for task in tasks {
+            task.await??;
         }
 
-        stdin.write("stop\n".as_bytes())?;
-        stdin.flush()?;
+        // サーバーを停止
+        {
+            let mut stdin_guard = stdin_shared.lock().unwrap();
+            stdin_guard.write("stop\n".as_bytes())?;
+            stdin_guard.flush()?;
+        }
         child.wait()?;
 
         Ok(())
