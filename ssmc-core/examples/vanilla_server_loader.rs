@@ -6,6 +6,7 @@ use ssmc_core::infra::vanilla::{McVanillaVersionQuery, VanillaVersionLoader};
 use ssmc_core::util::file_trie::Dir;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[tokio::main]
@@ -17,8 +18,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let java_loader = Box::new(DefaultMcJavaLoader::new(
         Box::new(DefaultUrlFetcher),
         Box::new(DefaultTrieLoader::new(
-            Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
-            Box::new(DefaultUrlFetcher),
+            Arc::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
+            Arc::new(DefaultUrlFetcher),
         )),
         PathBuf::from("temp_workspace/java-cache"),
     ));
@@ -69,8 +70,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let trie_loader = DefaultTrieLoader::new(
-        Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
-        Box::new(DefaultUrlFetcher),
+        Arc::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
+        Arc::new(DefaultUrlFetcher),
     );
 
     let write_start = Instant::now();

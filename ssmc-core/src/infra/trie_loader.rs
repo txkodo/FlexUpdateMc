@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::infra::{fs_handler::FsHandler, url_fetcher::UrlFetcher};
 use crate::util::file_trie::Dir;
@@ -17,8 +18,8 @@ pub struct DefaultTrieLoader {
 
 impl DefaultTrieLoader {
     pub fn new(
-        fs_handler: Box<dyn FsHandler + Send + Sync>,
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
+        fs_handler: Arc<dyn FsHandler + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
     ) -> Self {
         Self {
             converter: TrieToFsConverter::new(fs_handler, url_fetcher),
@@ -40,13 +41,14 @@ mod tests {
     use crate::infra::url_fetcher::DummyUrlFetcher;
     use crate::util::file_trie::{File, Path as VirtualPath};
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_trie_loader() {
-        let fs_handler = Box::new(OnMemoryFsHandler::new());
+        let fs_handler = Arc::new(OnMemoryFsHandler::new());
         let loader = DefaultTrieLoader::new(
-            Box::new(OnMemoryFsHandler::new()),
-            Box::new(DummyUrlFetcher::new()),
+            fs_handler.clone(),
+            Arc::new(DummyUrlFetcher::new()),
         );
 
         // Create a test trie

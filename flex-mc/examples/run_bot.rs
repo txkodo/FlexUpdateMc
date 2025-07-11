@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use flex_mc::infra::{
@@ -20,8 +20,8 @@ use ssmc_core::{
 async fn main() -> Result<()> {
     let dim = PathBuf::from("examples/work/server");
 
-    let fs_handler = Box::new(DefaultFsHandler::new());
-    let url_fetcher = Box::new(DefaultUrlFetcher);
+    let fs_handler = Arc::new(DefaultFsHandler::new());
+    let url_fetcher = Arc::new(DefaultUrlFetcher);
     let trie_loader = Box::new(DefaultTrieLoader::new(
         fs_handler.clone(),
         url_fetcher.clone(),

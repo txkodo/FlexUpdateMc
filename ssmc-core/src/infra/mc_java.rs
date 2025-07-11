@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use url::Url;
 
 #[async_trait::async_trait]
@@ -302,8 +303,8 @@ mod tests {
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
             Box::new(DefaultTrieLoader::new(
-                Box::new(DefaultFsHandler::new()),
-                Box::new(DummyUrlFetcher::new()),
+                Arc::new(DefaultFsHandler::new()),
+                Arc::new(DummyUrlFetcher::new()),
             )),
             PathBuf::from("/tmp/test_cache"),
         );
@@ -337,8 +338,8 @@ mod tests {
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
             Box::new(DefaultTrieLoader::new(
-                Box::new(DefaultFsHandler::new()),
-                Box::new(file_url_fetcher),
+                Arc::new(DefaultFsHandler::new()),
+                Arc::new(file_url_fetcher),
             )),
             PathBuf::from("/tmp/test_cache"),
         );
@@ -371,8 +372,8 @@ mod tests {
         let loader = DefaultMcJavaLoader::new(
             Box::new(url_fetcher),
             Box::new(DefaultTrieLoader::new(
-                Box::new(DefaultFsHandler::new()),
-                Box::new(DummyUrlFetcher::new()),
+                Arc::new(DefaultFsHandler::new()),
+                Arc::new(DummyUrlFetcher::new()),
             )),
             PathBuf::from("/tmp/test_cache"),
         );
@@ -389,8 +390,8 @@ mod tests {
         let loader = DefaultMcJavaLoader::new(
             Box::new(DummyUrlFetcher::new()),
             Box::new(DefaultTrieLoader::new(
-                Box::new(DefaultFsHandler::new()),
-                Box::new(DummyUrlFetcher::new()),
+                Arc::new(DefaultFsHandler::new()),
+                Arc::new(DummyUrlFetcher::new()),
             )),
             PathBuf::from("/tmp/test_cache"),
         );

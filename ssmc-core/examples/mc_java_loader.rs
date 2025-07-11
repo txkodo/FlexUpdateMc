@@ -3,6 +3,7 @@ use ssmc_core::infra::mc_java::{DefaultMcJavaLoader, McJavaLoader};
 use ssmc_core::infra::trie_loader::DefaultTrieLoader;
 use ssmc_core::infra::url_fetcher::DefaultUrlFetcher;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[tokio::main]
@@ -12,8 +13,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let loader = DefaultMcJavaLoader::new(
         url_fetcher,
         Box::new(DefaultTrieLoader::new(
-            Box::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
-            Box::new(DefaultUrlFetcher),
+            Arc::new(ssmc_core::infra::fs_handler::DefaultFsHandler::new()),
+            Arc::new(DefaultUrlFetcher),
         )),
         std::path::PathBuf::from("temp_workspace/java-cache"),
     );

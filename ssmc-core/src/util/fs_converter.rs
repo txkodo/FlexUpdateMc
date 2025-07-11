@@ -1,4 +1,5 @@
 use std::path::Path as StdPath;
+use std::sync::Arc;
 use anyhow::Result;
 
 use crate::infra::{fs_handler::FsHandler, url_fetcher::UrlFetcher};
@@ -6,11 +7,11 @@ use crate::util::file_trie::{Dir, Entry, File, Path};
 
 /// 物理ファイルシステムからfile_trieを作成するハンドラ
 pub struct FsToTrieConverter {
-    fs_handler: Box<dyn FsHandler + Send + Sync>,
+    fs_handler: Arc<dyn FsHandler + Send + Sync>,
 }
 
 impl FsToTrieConverter {
-    pub fn new(fs_handler: Box<dyn FsHandler + Send + Sync>) -> Self {
+    pub fn new(fs_handler: Arc<dyn FsHandler + Send + Sync>) -> Self {
         Self { fs_handler }
     }
 
@@ -51,14 +52,15 @@ impl FsToTrieConverter {
                 .collect();
             let virtual_path = Path::from(path_components);
 
-            if entry_path.is_dir() {
-                // Create directory entry
+            // Check if this is a directory by trying to list its contents
+            if self.fs_handler.list_entries(&entry_path).is_ok() {
+                // It's a directory
                 let mut subdir = Dir::new();
                 self.load_directory_recursive(base_path, &entry_path, &mut subdir)?;
                 dir.put_dir(virtual_path, subdir)
                     .map_err(|_| anyhow::anyhow!("Failed to add directory to trie"))?;
             } else {
-                // Create file entry
+                // It's a file
                 let data = self.fs_handler.read(&entry_path)
                     .map_err(|e| anyhow::anyhow!("Failed to read file {}: {}", entry_path.display(), e))?;
                 let file = File::Inline(data);
@@ -73,14 +75,14 @@ impl FsToTrieConverter {
 
 /// file_trieから物理ファイルシステムに書き込むハンドラ
 pub struct TrieToFsConverter {
-    fs_handler: Box<dyn FsHandler + Send + Sync>,
-    url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
+    fs_handler: Arc<dyn FsHandler + Send + Sync>,
+    url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
 }
 
 impl TrieToFsConverter {
     pub fn new(
-        fs_handler: Box<dyn FsHandler + Send + Sync>,
-        url_fetcher: Box<dyn UrlFetcher + Send + Sync>,
+        fs_handler: Arc<dyn FsHandler + Send + Sync>,
+        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
     ) -> Self {
         Self { fs_handler, url_fetcher }
     }
@@ -174,10 +176,11 @@ mod tests {
     use crate::infra::fs_handler::OnMemoryFsHandler;
     use crate::infra::url_fetcher::DummyUrlFetcher;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_roundtrip_conversion() {
-        let fs_handler = Box::new(OnMemoryFsHandler::new());
+        let fs_handler = Arc::new(OnMemoryFsHandler::new());
 
         // Setup: Create some files in the memory fs
         fs_handler.write(&PathBuf::from("/test.txt"), b"test content", false).unwrap();
@@ -185,7 +188,7 @@ mod tests {
         fs_handler.write(&PathBuf::from("/subdir/nested.txt"), b"nested content", false).unwrap();
 
         // Convert FS to Trie
-        let fs_to_trie = FsToTrieConverter::new(Box::new(OnMemoryFsHandler::new()));
+        let fs_to_trie = FsToTrieConverter::new(fs_handler.clone());
         let dir = fs_to_trie.load_directory(&PathBuf::from("/")).unwrap();
 
         // Verify trie content
@@ -195,8 +198,8 @@ mod tests {
 
         // Convert Trie back to FS
         let trie_to_fs = TrieToFsConverter::new(
-            Box::new(OnMemoryFsHandler::new()),
-            Box::new(DummyUrlFetcher::new())
+            fs_handler.clone(),
+            Arc::new(DummyUrlFetcher::new())
         );
         trie_to_fs.write_directory(&dir, &PathBuf::from("/output")).await.unwrap();
 

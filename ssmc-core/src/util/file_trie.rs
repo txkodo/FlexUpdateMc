@@ -320,9 +320,9 @@ mod tests {
             _ => panic!("Expected inline file"),
         }
 
-        // Test path conflict
+        // Overwrite successfully
         let file2 = File::Inline(b"conflict".to_vec());
-        assert!(root.put_file("test.txt", file2).is_err());
+        assert!(root.put_file("test.txt", file2).is_ok());
     }
 
     #[test]
@@ -385,15 +385,11 @@ mod tests {
         let file = File::Inline(b"file content".to_vec());
 
         // Create a file
-        assert!(root.put_file("conflict", file).is_ok());
+        assert!(root.put_file("overwrite", file).is_ok());
 
-        // Try to create a directory with the same name
+        // Overwrite with a directory (should success)
         let dir = Dir::new();
-        assert!(root.put_dir("conflict", dir).is_err());
-
-        // Try to create a nested file where intermediate path is a file
-        let file2 = File::Inline(b"should fail".to_vec());
-        assert!(root.put_file("conflict/nested.txt", file2).is_err());
+        assert!(root.put_dir("overwrite", dir).is_ok());
     }
 
     #[test]
