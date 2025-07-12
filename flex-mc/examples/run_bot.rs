@@ -36,22 +36,21 @@ async fn main() -> Result<()> {
         VanillaVersionLoader::new(url_fetcher.clone(), java_loader),
         Box::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
         Box::new(DefaultFreePortFinder),
+        Arc::new(DefaultTrieLoader::new(fs_handler.clone(), url_fetcher)),
         dim.clone(),
         unsafe { NonZeroUsize::new_unchecked(10) },
     );
 
     let world_data = Dir::new();
 
-    let chunks: Vec<ChunkPos> = (-100..100)
-        .flat_map(|x| (-100..100).map(move |z| ChunkPos::new(x, z)))
+    let chunks: Vec<ChunkPos> = (-5..5)
+        .flat_map(|x| (-5..5).map(move |z| ChunkPos::new(x, z)))
         .collect();
 
     chunk_generator
         .generate_chunks(
             world_data,
-            fs_handler.clone(),
-            url_fetcher.clone(),
-            &McVanillaVersionId::new("1.21.5".to_string()),
+            &McVanillaVersionId::new("1.21.7".to_string()),
             &chunks,
         )
         .await?;

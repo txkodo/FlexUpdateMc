@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let write_start = Instant::now();
-    trie_loader.write_contents(&dir, &output_dir).await?;
+    trie_loader.mount_contents(&dir, &output_dir).await?;
     let write_time = write_start.elapsed();
 
     println!(

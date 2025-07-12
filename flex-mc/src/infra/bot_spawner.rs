@@ -64,7 +64,14 @@ impl BotSpawner for AzaleaBotSpawner {
         let mut command = std::process::Command::new(&self.bot_file_path);
 
         command
-            .args([name, &host.to_string(), &port.to_string()])
+            .args([
+                "--username",
+                name,
+                "--host",
+                &host.to_string(),
+                "--port",
+                &port.to_string(),
+            ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
@@ -78,12 +85,25 @@ impl BotSpawner for AzaleaBotSpawner {
             .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
         let mut lines = BufReader::new(stdout).lines();
 
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
+        let mut err_lines = BufReader::new(stderr).lines();
+        // ログイン完了後も継続してイベントを処理するスレッドを起動
+        thread::spawn(move || {
+            while let Some(Ok(line)) = err_lines.next() {
+                println!("Received err: {}", line);
+            }
+        });
+
         let name_clone = name.to_string();
         let tx_clone = tx.clone();
 
         // ログイン完了まで待機
         let mut logged_in = false;
         while let Some(Ok(line)) = lines.next() {
+            println!("Received line: {}", line);
             let event: BotEvent = serde_json::from_str(&line)?;
             match event {
                 BotEvent::Spawn {} => {
@@ -107,6 +127,7 @@ impl BotSpawner for AzaleaBotSpawner {
         // ログイン完了後も継続してイベントを処理するスレッドを起動
         thread::spawn(move || {
             while let Some(Ok(line)) = lines.next() {
+                println!("Received line: {}", line);
                 if let Ok(event) = serde_json::from_str::<BotEvent>(&line) {
                     match event {
                         BotEvent::Chunk { x, z } => {

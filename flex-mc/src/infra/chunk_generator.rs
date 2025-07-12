@@ -4,6 +4,7 @@ use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
         fs_handler::FsHandler,
+        trie_loader::TrieLoader,
         url_fetcher::UrlFetcher,
         vanilla::{McVanillaVersion, McVanillaVersionType, VanillaVersionLoader},
     },
@@ -65,85 +66,11 @@ fn write_file_content(dir: &mut Dir, path: &VirtualPath, data: &[u8]) -> Result<
     Ok(())
 }
 
-// ヘルパー関数：物理ファイルシステムにマウント
-async fn mount_to_physical_fs(
-    dir: &Dir,
-    base_path: &std::path::Path,
-    fs_handler: &dyn FsHandler,
-    url_fetcher: &dyn UrlFetcher,
-) -> Result<()> {
-    mount_dir_to_physical_fs(base_path, &VirtualPath::new(), dir, fs_handler, url_fetcher).await
-}
-
-fn mount_dir_to_physical_fs<'a>(
-    base_path: &'a std::path::Path,
-    rel_path: &'a VirtualPath,
-    dir: &'a Dir,
-    fs_handler: &'a dyn FsHandler,
-    url_fetcher: &'a dyn UrlFetcher,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-    Box::pin(async move {
-        if !rel_path.is_empty() {
-            let path_str = rel_path.components().join("/");
-            let physical_path = base_path.join(&path_str);
-            println!(
-                "Mounting directory {} to {}",
-                path_str,
-                physical_path.display()
-            );
-            fs_handler
-                .mkdir(&physical_path)
-                .map_err(|e| anyhow::anyhow!("Failed to create directory: {}", e))?;
-        }
-
-        for (name, child_entry) in dir.iter() {
-            let mut child_path = rel_path.clone();
-            child_path.push(name);
-
-            match child_entry {
-                Entry::File(file) => {
-                    let path_str = child_path.components().join("/");
-                    let physical_path = base_path.join(&path_str);
-
-                    let data = match file {
-                        File::Inline(data) => data.clone(),
-                        File::Path(path_buf) => fs_handler
-                            .read(path_buf)
-                            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?,
-                        File::Url(url) => url_fetcher
-                            .fetch_binary(url)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e))?,
-                    };
-
-                    println!("Mounting file {} to {}", path_str, physical_path.display());
-                    fs_handler
-                        .write(&physical_path, &data, false)
-                        .map_err(|e| anyhow::anyhow!("Failed to write file: {}", e))?;
-                }
-                Entry::Dir(child_dir) => {
-                    mount_dir_to_physical_fs(
-                        base_path,
-                        &child_path,
-                        child_dir,
-                        fs_handler,
-                        url_fetcher,
-                    )
-                    .await?;
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
 #[async_trait::async_trait]
 pub trait ChunkGenerator {
     async fn generate_chunks(
         &self,
         world_data: Dir,
-        fs_handler: Arc<dyn FsHandler + Send + Sync>,
-        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()>;
@@ -153,6 +80,7 @@ pub struct DefaultChunkGenerator {
     version_loader: VanillaVersionLoader,
     bot_spawner: Box<dyn BotSpawner + Send + Sync>,
     free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
+    trie_loader: Arc<dyn TrieLoader + Send + Sync>,
     work_dir: PathBuf,
     max_bot_count: NonZeroUsize,
 }
@@ -162,6 +90,7 @@ impl DefaultChunkGenerator {
         version_loader: VanillaVersionLoader,
         bot_spawner: Box<dyn BotSpawner + Send + Sync>,
         free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
+        trie_loader: Arc<dyn TrieLoader + Send + Sync>,
         work_dir: PathBuf,
         max_bot_count: NonZeroUsize,
     ) -> Self {
@@ -169,6 +98,7 @@ impl DefaultChunkGenerator {
             version_loader,
             bot_spawner,
             free_port_finder,
+            trie_loader,
             work_dir,
             max_bot_count,
         }
@@ -180,14 +110,11 @@ impl ChunkGenerator for DefaultChunkGenerator {
     async fn generate_chunks(
         &self,
         mut world_data: Dir,
-        fs_handler: Arc<dyn FsHandler + Send + Sync>,
-        url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
         // ボットを中心に 41 x 41 チャンクが生成される
         let view_distance = 20;
-
 
         let (new_world_data, mut command) = {
             let (new_world_data, command_factory) = self
@@ -213,13 +140,14 @@ impl ChunkGenerator for DefaultChunkGenerator {
             let properties_path = VirtualPath::from_str("server.properties");
             let mut props = {
                 if file_exists(&world_data, &properties_path) {
-                    let properties = read_file_content(
-                        &world_data,
-                        &properties_path,
-                        &*fs_handler,
-                        &*url_fetcher,
-                    )
-                    .await?;
+                    let properties = self
+                        .trie_loader
+                        .load_content(
+                            world_data
+                                .get_file(&properties_path)
+                                .unwrap_or(&File::Inline(vec![])),
+                        )
+                        .await?;
                     java_properties::read(Cursor::new(properties))?
                 } else {
                     HashMap::new()
@@ -246,7 +174,9 @@ impl ChunkGenerator for DefaultChunkGenerator {
         }
 
         let tmpdir = self.work_dir.join("server");
-        mount_to_physical_fs(&world_data, &tmpdir, &*fs_handler, &*url_fetcher).await?;
+        self.trie_loader
+            .mount_contents(&world_data, &tmpdir)
+            .await?;
 
         println!("Starting server at {:?}", &tmpdir);
         println!("Starting server at {:?}", &command);
@@ -271,10 +201,10 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
         let chunk_groups = group_chunks(chunk_list.to_vec(), view_distance);
         let stdin_shared = Arc::new(Mutex::new(stdin));
-        
+
         // 並列でボットタスクを実行
         let mut tasks = vec![];
-        
+
         // 並列処理のために、spawn_botを各タスクで非同期実行
         for (idx, (center, chunks)) in chunk_groups.into_iter().enumerate() {
             let chunks: HashSet<_> = chunks.into_iter().collect();
@@ -288,7 +218,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
                 .bot_spawner
                 .spawn_bot(&host, port, &version, &botname)
                 .await?;
-            
+
             let task = tokio::spawn(async move {
                 // ボットをテレポート
                 {
@@ -304,23 +234,32 @@ impl ChunkGenerator for DefaultChunkGenerator {
                     )?;
                     stdin_guard.flush()?;
                 }
-                
+
                 // チャンクイベントを待機
                 let mut remaining_chunks = chunks;
+                let chunk_count = remaining_chunks.len();
                 for (x, z) in rx {
                     remaining_chunks.remove(&ChunkPos::new(x as isize, z as isize));
+                    println!(
+                        "Bot {} received chunk at ({}, {}) {}/{})",
+                        botname,
+                        x,
+                        z,
+                        chunk_count - remaining_chunks.len(),
+                        chunk_count
+                    );
                     if remaining_chunks.is_empty() {
                         break;
                     }
                 }
-                
+
                 bot.stop()?;
                 Ok::<(), anyhow::Error>(())
             });
-            
+
             tasks.push(task);
         }
-        
+
         // すべてのタスクの完了を待機
         for task in tasks {
             task.await??;
@@ -335,50 +274,6 @@ impl ChunkGenerator for DefaultChunkGenerator {
         child.wait()?;
 
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct QuadChunkPos {
-    x: isize,
-    z: isize,
-}
-
-impl PartialOrd for QuadChunkPos {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp_private(other))
-    }
-}
-impl Ord for QuadChunkPos {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.cmp_private(other)
-    }
-}
-
-impl QuadChunkPos {
-    pub fn from_chunk(chunk_pos: &ChunkPos) -> Self {
-        QuadChunkPos {
-            x: chunk_pos.x.div_euclid(2),
-            z: chunk_pos.z.div_euclid(2),
-        }
-    }
-
-    pub fn region_pos(&self) -> RegionPos {
-        RegionPos::new(self.x.div_euclid(16), self.z.div_euclid(16))
-    }
-
-    fn cmp_private(&self, other: &Self) -> Ordering {
-        match self.region_pos().cmp(&other.region_pos()) {
-            Ordering::Greater => Ordering::Greater,
-            Ordering::Less => Ordering::Less,
-            Ordering::Equal => (self.x, self.z).cmp(&(other.x, other.z)),
-        }
-    }
-
-    fn center_block_pos(&self) -> (isize, isize) {
-        let bx = self.x * 32 + 16;
-        let bz = self.z * 32 + 16;
-        (bx, bz)
     }
 }
 

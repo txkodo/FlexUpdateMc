@@ -86,6 +86,12 @@ impl From<&[&str]> for Path {
     }
 }
 
+impl From<&Path> for Path {
+    fn from(components: &Path) -> Self {
+        components.clone()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum File {
     Inline(Vec<u8>),
@@ -215,6 +221,44 @@ impl Dir {
     pub fn into_iter(self) -> hash_map::IntoIter<String, Entry> {
         self.0.into_iter()
     }
+
+    pub fn iter_all<'a>(&'a self) -> DirIterator<'a> {
+        DirIterator::new(self, Path::new())
+    }
+}
+
+pub struct DirIterator<'a> {
+    stack: Vec<(Path, &'a Entry)>,
+}
+
+impl<'a> DirIterator<'a> {
+    fn new(dir: &'a Dir, base_path: Path) -> Self {
+        let mut stack = Vec::new();
+        for (name, entry) in dir.0.iter() {
+            let entry_path = base_path.join(name.clone());
+            stack.push((entry_path, entry));
+        }
+        stack.reverse();
+        Self { stack }
+    }
+}
+
+impl<'a> Iterator for DirIterator<'a> {
+    type Item = (Path, &'a Entry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((path, entry)) = self.stack.pop() {
+            if let Entry::Dir(dir) = entry {
+                for (name, child_entry) in dir.0.iter() {
+                    let child_path = path.join(name.clone());
+                    self.stack.push((child_path, child_entry));
+                }
+            }
+            Some((path, entry))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -235,42 +279,6 @@ impl Entry {
 
     pub fn is_dir(&self) -> bool {
         matches!(self, Entry::Dir(_))
-    }
-
-    pub fn iter_all<'a>(&'a self) -> IterAll<'a> {
-        IterAll::new(Path::new(), self)
-    }
-}
-
-pub struct IterAll<'a> {
-    stack: Vec<(Path, &'a Entry)>,
-}
-
-impl<'a> IterAll<'a> {
-    pub fn new(base_path: Path, entry: &'a Entry) -> Self {
-        let mut stack = Vec::new();
-        stack.push((base_path, entry));
-        IterAll { stack }
-    }
-}
-
-impl<'a> Iterator for IterAll<'a> {
-    type Item = (Path, &'a Entry);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some((path, entry)) = self.stack.pop() {
-            match entry {
-                Entry::File(_) => return Some((path, entry)),
-                Entry::Dir(dir) => {
-                    for (name, child_entry) in dir.iter() {
-                        let new_path = path.join(name);
-                        self.stack.push((new_path, child_entry));
-                        return Some((path, entry));
-                    }
-                }
-            }
-        }
-        None
     }
 }
 

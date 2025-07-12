@@ -3,17 +3,22 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::infra::{fs_handler::FsHandler, url_fetcher::UrlFetcher};
-use crate::util::file_trie::Dir;
+use crate::util::file_trie::{Dir, File};
 use crate::util::fs_converter::TrieToFsConverter;
 
 #[async_trait::async_trait]
 pub trait TrieLoader {
     /// Writes the contents of the file trie to the specified base path.
-    async fn write_contents(&self, trie: &Dir, base_path: &Path) -> Result<()>;
+    async fn mount_contents(&self, trie: &Dir, base_path: &Path) -> Result<()>;
+
+    /// Loads the content of a file from the trie.
+    async fn load_content(&self, trie: &File) -> Result<Vec<u8>>;
 }
 
 pub struct DefaultTrieLoader {
     converter: TrieToFsConverter,
+    fs_handler: Arc<dyn FsHandler + Send + Sync>,
+    url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
 }
 
 impl DefaultTrieLoader {
@@ -22,15 +27,31 @@ impl DefaultTrieLoader {
         url_fetcher: Arc<dyn UrlFetcher + Send + Sync>,
     ) -> Self {
         Self {
-            converter: TrieToFsConverter::new(fs_handler, url_fetcher),
+            converter: TrieToFsConverter::new(fs_handler.clone(), url_fetcher.clone()),
+            fs_handler,
+            url_fetcher,
         }
     }
 }
 
 #[async_trait::async_trait]
 impl TrieLoader for DefaultTrieLoader {
-    async fn write_contents(&self, trie: &Dir, base_path: &Path) -> Result<()> {
+    async fn mount_contents(&self, trie: &Dir, base_path: &Path) -> Result<()> {
         self.converter.write_directory(trie, base_path).await
+    }
+
+    async fn load_content(&self, file: &File) -> Result<Vec<u8>> {
+        match file {
+            File::Inline(data) => Ok(data.clone()),
+            File::Path(path) => self.fs_handler.read(path).map_err(|e| {
+                anyhow::anyhow!("Failed to read source file {}: {}", path.display(), e)
+            }),
+            File::Url(url) => self
+                .url_fetcher
+                .fetch_binary(url)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to fetch URL {}: {}", url, e)),
+        }
     }
 }
 
@@ -46,10 +67,7 @@ mod tests {
     #[tokio::test]
     async fn test_trie_loader() {
         let fs_handler = Arc::new(OnMemoryFsHandler::new());
-        let loader = DefaultTrieLoader::new(
-            fs_handler.clone(),
-            Arc::new(DummyUrlFetcher::new()),
-        );
+        let loader = DefaultTrieLoader::new(fs_handler.clone(), Arc::new(DummyUrlFetcher::new()));
 
         // Create a test trie
         let mut trie = Dir::new();
@@ -69,7 +87,7 @@ mod tests {
 
         // Write to filesystem
         loader
-            .write_contents(&trie, &PathBuf::from("/output"))
+            .mount_contents(&trie, &PathBuf::from("/output"))
             .await
             .unwrap();
 

@@ -158,7 +158,7 @@ impl DefaultMcJavaLoader {
 
             // Download and install the runtime
             self.trie_loader
-                .write_contents(&trie, &runtime_path)
+                .mount_contents(&trie, &runtime_path)
                 .await
                 .map_err(|e| e.to_string())?;
         }
