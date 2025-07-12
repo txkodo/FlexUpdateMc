@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::infra::{fs_handler::FsHandler, url_fetcher::UrlFetcher};
-use crate::util::file_trie::{Dir, File};
+use crate::util::file_trie::{Dir, File, FileContent};
 use crate::util::fs_converter::TrieToFsConverter;
 
 #[async_trait::async_trait]
@@ -41,12 +41,12 @@ impl TrieLoader for DefaultTrieLoader {
     }
 
     async fn load_content(&self, file: &File) -> Result<Vec<u8>> {
-        match file {
-            File::Inline(data) => Ok(data.clone()),
-            File::Path(path) => self.fs_handler.read(path).map_err(|e| {
+        match &file.content {
+            FileContent::Inline(data) => Ok(data.clone()),
+            FileContent::Path(path) => self.fs_handler.read(path).map_err(|e| {
                 anyhow::anyhow!("Failed to read source file {}: {}", path.display(), e)
             }),
-            File::Url(url) => self
+            FileContent::Url(url) => self
                 .url_fetcher
                 .fetch_binary(url)
                 .await
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::infra::fs_handler::OnMemoryFsHandler;
     use crate::infra::url_fetcher::DummyUrlFetcher;
-    use crate::util::file_trie::{File, Path as VirtualPath};
+    use crate::util::file_trie::{File, Path as VirtualPath, Permission};
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -73,7 +73,7 @@ mod tests {
         let mut trie = Dir::new();
         trie.put_file(
             VirtualPath::from_str("test.txt"),
-            File::Inline(b"hello world".to_vec()),
+            File::inline(b"hello world".to_vec(), Permission::read_write()),
         )
         .unwrap();
 
@@ -81,7 +81,7 @@ mod tests {
             .unwrap();
         trie.put_file(
             VirtualPath::from_str("subdir/nested.txt"),
-            File::Inline(b"nested content".to_vec()),
+            File::inline(b"nested content".to_vec(), Permission::read_write()),
         )
         .unwrap();
 

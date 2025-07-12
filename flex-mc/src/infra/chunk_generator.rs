@@ -3,15 +3,12 @@ use java_properties;
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
-        fs_handler::FsHandler,
         trie_loader::TrieLoader,
-        url_fetcher::UrlFetcher,
         vanilla::{McVanillaVersion, McVanillaVersionType, VanillaVersionLoader},
     },
     util::file_trie::{Dir, Entry, File, Path as VirtualPath},
 };
 use std::{
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
@@ -22,33 +19,8 @@ use std::{
 };
 
 use crate::infra::{
-    bot_spawner::BotSpawner,
-    free_port_finder::FreePortFinder,
-    region_loader::{ChunkPos, RegionPos},
+    bot_spawner::BotSpawner, free_port_finder::FreePortFinder, region_loader::ChunkPos,
 };
-
-// ヘルパー関数：ファイルの内容を読み取る
-async fn read_file_content(
-    dir: &Dir,
-    path: &VirtualPath,
-    fs_handler: &dyn FsHandler,
-    url_fetcher: &dyn UrlFetcher,
-) -> Result<Vec<u8>> {
-    let file = dir
-        .get_file(path.clone())
-        .ok_or_else(|| anyhow::anyhow!("File not found: {:?}", path))?;
-
-    match file {
-        File::Inline(data) => Ok(data.clone()),
-        File::Path(path_buf) => fs_handler
-            .read(path_buf)
-            .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e)),
-        File::Url(url) => url_fetcher
-            .fetch_binary(url)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch URL: {}", e)),
-    }
-}
 
 // ヘルパー関数：ファイルの存在確認
 fn file_exists(dir: &Dir, path: &VirtualPath) -> bool {
@@ -60,7 +32,7 @@ fn file_exists(dir: &Dir, path: &VirtualPath) -> bool {
 
 // ヘルパー関数：ファイルを書き込み
 fn write_file_content(dir: &mut Dir, path: &VirtualPath, data: &[u8]) -> Result<()> {
-    let file = File::Inline(data.to_vec());
+    let file = File::inline(data.to_vec(), 0o644);
     dir.put_file(path.clone(), file)
         .map_err(|_| anyhow::anyhow!("Failed to write file"))?;
     Ok(())
@@ -145,7 +117,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
                         .load_content(
                             world_data
                                 .get_file(&properties_path)
-                                .unwrap_or(&File::Inline(vec![])),
+                                .unwrap_or(&File::inline(vec![], 0o644)),
                         )
                         .await?;
                     java_properties::read(Cursor::new(properties))?

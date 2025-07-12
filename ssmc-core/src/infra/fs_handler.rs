@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 pub trait FsHandler: Send + Sync {
     fn list_entries(&self, path: &Path) -> Result<Vec<PathBuf>, String>;
     fn mkdir(&self, path: &Path) -> Result<(), String>;
+    fn create_symlink(&self, path: &Path, target: &Path) -> Result<(), String>;
     fn read(&self, path: &Path) -> Result<Vec<u8>, String>;
     fn write(&self, path: &Path, data: &[u8], executable: bool) -> Result<(), String>;
     fn delete(&self, path: &Path) -> Result<(), String>;
@@ -36,6 +37,48 @@ impl FsHandler for DefaultFsHandler {
         }
 
         Ok(result)
+    }
+
+    fn create_symlink(&self, path: &Path, target: &Path) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, path).map_err(|e| {
+                format!(
+                    "Failed to create symlink {} -> {}: {}",
+                    path.display(),
+                    target.display(),
+                    e
+                )
+            })
+        }
+        #[cfg(windows)]
+        {
+            use std::fs;
+            use std::os::windows::fs::{symlink_dir, symlink_file};
+            if target.is_dir() {
+                symlink_dir(target, path).map_err(|e| {
+                    format!(
+                        "Failed to create directory symlink {} -> {}: {}",
+                        path.display(),
+                        target.display(),
+                        e
+                    )
+                })
+            } else {
+                symlink_file(target, path).map_err(|e| {
+                    format!(
+                        "Failed to create file symlink {} -> {}: {}",
+                        path.display(),
+                        target.display(),
+                        e
+                    )
+                })
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err("Symlinks are not supported on this platform".to_string())
+        }
     }
 
     fn mkdir(&self, path: &Path) -> Result<(), String> {
@@ -122,6 +165,7 @@ impl DefaultFsHandler {
 
 pub struct OnMemoryFsHandler {
     files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
+    links: Arc<RwLock<HashMap<PathBuf, PathBuf>>>,
     directories: Arc<RwLock<HashMap<PathBuf, bool>>>,
     executable_files: Arc<RwLock<HashMap<PathBuf, bool>>>,
 }
@@ -130,6 +174,7 @@ impl OnMemoryFsHandler {
     pub fn new() -> Self {
         Self {
             files: Arc::new(RwLock::new(HashMap::new())),
+            links: Arc::new(RwLock::new(HashMap::new())),
             directories: Arc::new(RwLock::new(HashMap::new())),
             executable_files: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -187,6 +232,20 @@ impl FsHandler for OnMemoryFsHandler {
             directories.insert(parent.to_path_buf(), true);
             current = parent;
         }
+
+        Ok(())
+    }
+
+    fn create_symlink(&self, path: &Path, target: &Path) -> Result<(), String> {
+        // Create parent directories
+        if let Some(parent) = path.parent() {
+            self.mkdir(parent)?;
+        }
+
+        self.links
+            .write()
+            .map_err(|e| format!("Lock error: {}", e))?
+            .insert(path.to_path_buf(), target.to_path_buf());
 
         Ok(())
     }

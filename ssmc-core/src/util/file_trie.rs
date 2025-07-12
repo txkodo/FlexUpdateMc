@@ -93,10 +93,76 @@ impl From<&Path> for Path {
 }
 
 #[derive(Debug, Clone)]
-pub enum File {
+pub enum FileContent {
     Inline(Vec<u8>),
     Url(Url),
     Path(path::PathBuf),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permission(pub u16);
+
+impl Permission {
+    pub fn new(mode: u16) -> Self {
+        Permission(mode)
+    }
+
+    pub fn read_only() -> Self {
+        Permission(0o444)
+    }
+
+    pub fn read_write() -> Self {
+        Permission(0o644)
+    }
+
+    pub fn executable() -> Self {
+        Permission(0o755)
+    }
+
+    pub fn all() -> Self {
+        Permission(0o777)
+    }
+
+    pub fn mode(&self) -> u16 {
+        self.0
+    }
+
+    pub fn is_executable(&self) -> bool {
+        (self.0 & 0o111) != 0
+    }
+}
+
+impl From<u16> for Permission {
+    fn from(mode: u16) -> Self {
+        Permission::new(mode)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct File {
+    pub content: FileContent,
+    pub permission: Permission,
+}
+
+impl File {
+    pub fn new(content: FileContent, permission: impl Into<Permission>) -> Self {
+        File {
+            content,
+            permission: permission.into(),
+        }
+    }
+
+    pub fn inline(data: Vec<u8>, permission: impl Into<Permission>) -> Self {
+        File::new(FileContent::Inline(data), permission)
+    }
+
+    pub fn url(url: Url, permission: impl Into<Permission>) -> Self {
+        File::new(FileContent::Url(url), permission)
+    }
+
+    pub fn path(path: path::PathBuf, permission: impl Into<Permission>) -> Self {
+        File::new(FileContent::Path(path), permission)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,7 +192,7 @@ impl Dir {
                     let remaining_path = Path(components[1..].to_vec());
                     dir.get(remaining_path)
                 }
-                Entry::File(_) => None, // Cannot traverse into a file
+                _ => None, // Cannot traverse into a file
             }
         }
     }
@@ -161,7 +227,7 @@ impl Dir {
             // Get or create intermediate directory
             let intermediate_dir = match self.0.get_mut(first) {
                 Some(Entry::Dir(dir)) => dir,
-                Some(Entry::File(_)) => {
+                Some(_) => {
                     return Err(Error::PathConflict);
                 }
                 None => {
@@ -184,6 +250,9 @@ impl Dir {
     }
     pub fn put_dir(&mut self, path: impl Into<Path>, dir: Dir) -> Result<(), Error> {
         self.put(path, Entry::Dir(dir))
+    }
+    pub fn put_link(&mut self, path: impl Into<Path>, target: path::PathBuf) -> Result<(), Error> {
+        self.put(path, Entry::Link(target))
     }
 
     pub fn delete(&mut self, path: impl Into<Path>) -> bool {
@@ -270,6 +339,7 @@ pub enum Error {
 pub enum Entry {
     File(File),
     Dir(Dir),
+    Link(path::PathBuf),
 }
 
 impl Entry {
@@ -315,7 +385,7 @@ mod tests {
     #[test]
     fn test_vdir_basic_operations() {
         let mut root = Dir::new();
-        let file = File::Inline(b"hello world".to_vec());
+        let file = File::inline(b"hello world".to_vec(), Permission::read_write());
 
         // Test put_file
         assert!(root.put_file("test.txt", file).is_ok());
@@ -323,20 +393,20 @@ mod tests {
         // Test get_file
         let retrieved = root.get_file("test.txt");
         assert!(retrieved.is_some());
-        match retrieved.unwrap() {
-            File::Inline(data) => assert_eq!(data, b"hello world"),
+        match &retrieved.unwrap().content {
+            FileContent::Inline(data) => assert_eq!(data, b"hello world"),
             _ => panic!("Expected inline file"),
         }
 
         // Overwrite successfully
-        let file2 = File::Inline(b"conflict".to_vec());
+        let file2 = File::inline(b"conflict".to_vec(), Permission::read_write());
         assert!(root.put_file("test.txt", file2).is_ok());
     }
 
     #[test]
     fn test_vdir_nested_operations() {
         let mut root = Dir::new();
-        let file = File::Inline(b"nested file".to_vec());
+        let file = File::inline(b"nested file".to_vec(), Permission::read_write());
 
         // Test automatic intermediate directory creation
         assert!(root.put_file("dir1/dir2/nested.txt", file).is_ok());
@@ -356,7 +426,7 @@ mod tests {
     #[test]
     fn test_vdir_deletion() {
         let mut root = Dir::new();
-        let file = File::Inline(b"to be deleted".to_vec());
+        let file = File::inline(b"to be deleted".to_vec(), Permission::read_write());
 
         // Create file
         assert!(root.put_file("temp.txt", file).is_ok());
@@ -373,7 +443,7 @@ mod tests {
     #[test]
     fn test_vdir_nested_deletion() {
         let mut root = Dir::new();
-        let file = File::Inline(b"nested deletion".to_vec());
+        let file = File::inline(b"nested deletion".to_vec(), Permission::read_write());
 
         // Create nested file
         assert!(root.put_file("a/b/c.txt", file).is_ok());
@@ -390,7 +460,7 @@ mod tests {
     #[test]
     fn test_path_conflict_scenarios() {
         let mut root = Dir::new();
-        let file = File::Inline(b"file content".to_vec());
+        let file = File::inline(b"file content".to_vec(), Permission::read_write());
 
         // Create a file
         assert!(root.put_file("overwrite", file).is_ok());
@@ -403,22 +473,22 @@ mod tests {
     #[test]
     fn test_path_conversion() {
         let mut root = Dir::new();
-        let file = File::Inline(b"conversion test".to_vec());
+        let file = File::inline(b"conversion test".to_vec(), Permission::read_write());
 
         // Test string literal
         assert!(root.put_file("test1.txt", file).is_ok());
 
         // Test String
-        let file2 = File::Inline(b"string test".to_vec());
+        let file2 = File::inline(b"string test".to_vec(), Permission::read_write());
         let path = "test2.txt".to_string();
         assert!(root.put_file(path, file2).is_ok());
 
         // Test Vec<&str>
-        let file4 = File::Inline(b"vec test".to_vec());
+        let file4 = File::inline(b"vec test".to_vec(), Permission::read_write());
         assert!(root.put_file(vec!["dir", "test4.txt"], file4).is_ok());
 
         // Test slice
-        let file5 = File::Inline(b"slice test".to_vec());
+        let file5 = File::inline(b"slice test".to_vec(), Permission::read_write());
         assert!(root.put_file(&["dir", "test5.txt"][..], file5).is_ok());
 
         // Test retrieval works with all types
@@ -442,7 +512,7 @@ mod tests {
         ];
 
         for (path, content) in files.iter() {
-            let file = File::Inline(content.as_bytes().to_vec());
+            let file = File::inline(content.as_bytes().to_vec(), Permission::read_write());
             assert!(root.put_file(*path, file).is_ok());
         }
 
@@ -450,8 +520,8 @@ mod tests {
         for (path, content) in files.iter() {
             let retrieved = root.get_file(*path);
             assert!(retrieved.is_some());
-            match retrieved.unwrap() {
-                File::Inline(data) => assert_eq!(data, content.as_bytes()),
+            match &retrieved.unwrap().content {
+                FileContent::Inline(data) => assert_eq!(data, content.as_bytes()),
                 _ => panic!("Expected inline file"),
             }
         }

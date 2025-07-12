@@ -1,7 +1,7 @@
 use crate::{
     domain::{McServerLoader, McVanillaVersionId, McVersion},
     infra::{mc_java::McJavaLoader, url_fetcher::UrlFetcher},
-    util::file_trie::{Dir, File, Path},
+    util::file_trie::{Dir, File, Path, Permission},
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -95,7 +95,7 @@ impl McServerLoader for VanillaVersionLoader {
         let server_url =
             Url::parse(&server_download.url).map_err(|e| format!("Invalid server URL: {}", e))?;
 
-        let server_file = File::Url(server_url);
+        let server_file = File::url(server_url, Permission::read_write());
         world_data.put_file(Path::from_str("server.jar"), server_file)
             .map_err(|_| "Failed to add server.jar to world data".to_string())?;
 
@@ -673,11 +673,11 @@ mod tests {
         let mut initial_world_data = Dir::new();
         initial_world_data.put_file(
             Path::from_str("level.dat"),
-            File::Inline(b"world data".to_vec())
+            File::inline(b"world data".to_vec(), Permission::read_write())
         ).unwrap();
         initial_world_data.put_file(
             Path::from_str("region/r.0.0.mca"), 
-            File::Inline(b"region data".to_vec())
+            File::inline(b"region data".to_vec(), Permission::read_write())
         ).unwrap();
 
         let result = loader
@@ -696,15 +696,15 @@ mod tests {
         // Check for original world files
         let level_dat = final_world_data.get_file(Path::from_str("level.dat"))
             .expect("level.dat should be present");
-        assert!(matches!(level_dat, File::Inline(_)));
+        assert!(matches!(level_dat.content, crate::util::file_trie::FileContent::Inline(_)));
 
         let region_file = final_world_data.get_file(Path::from_str("region/r.0.0.mca"))
             .expect("region file should be present");
-        assert!(matches!(region_file, File::Inline(_)));
+        assert!(matches!(region_file.content, crate::util::file_trie::FileContent::Inline(_)));
 
         // Check for added server.jar
         let server_jar = final_world_data.get_file(Path::from_str("server.jar"))
             .expect("server.jar should be added to world data");
-        assert!(matches!(server_jar, File::Url(_)));
+        assert!(matches!(server_jar.content, crate::util::file_trie::FileContent::Url(_)));
     }
 }

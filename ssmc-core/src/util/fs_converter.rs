@@ -3,7 +3,7 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 
 use crate::infra::{fs_handler::FsHandler, url_fetcher::UrlFetcher};
-use crate::util::file_trie::{Dir, Entry, File, Path};
+use crate::util::file_trie::{Dir, Entry, File, FileContent, Path, Permission};
 
 /// 物理ファイルシステムからfile_trieを作成するハンドラ
 pub struct FsToTrieConverter {
@@ -24,7 +24,10 @@ impl FsToTrieConverter {
 
     /// 単一ファイルを読み込んでFileを作成
     pub fn load_file(&self, physical_path: &StdPath) -> Result<File> {
-        Ok(File::Path(physical_path.to_path_buf()))
+        Ok(File::path(
+            physical_path.to_path_buf(),
+            Permission::read_write(),
+        ))
     }
 
     fn load_directory_recursive(
@@ -49,7 +52,7 @@ impl FsToTrieConverter {
             // Check if this is a file or directory using efficient existence check
             if self.fs_handler.is_file(&entry_path) {
                 // It's a file
-                let file = File::Path(entry_path.to_path_buf());
+                let file = File::path(entry_path.to_path_buf(), Permission::read_write());
                 dir.put_file(virtual_path, file)
                     .map_err(|_| anyhow::anyhow!("Failed to add file to trie"))?;
             } else if self.fs_handler.is_dir(&entry_path) {
@@ -86,6 +89,7 @@ impl TrieToFsConverter {
     pub async fn write_directory(&self, dir: &Dir, base_path: &StdPath) -> Result<()> {
         let mut dirs = Vec::new();
         let mut files = Vec::new();
+        let mut links = Vec::new();
 
         dir.iter_all().for_each(|(path, entry)| match entry {
             Entry::File(file) => {
@@ -93,6 +97,9 @@ impl TrieToFsConverter {
             }
             Entry::Dir(subdir) => {
                 dirs.push((path, subdir));
+            }
+            Entry::Link(target) => {
+                links.push((path, target));
             }
         });
 
@@ -108,11 +115,28 @@ impl TrieToFsConverter {
             })?;
         }
 
+        println!("Writing files: {:?}", files.len());
         // 次にファイルを書き込み
         for (path, file) in files {
             println!("Writing file: {:?}", path);
             let physical_path = self.get_physical_path(base_path, &path);
-            self.write_file(file, &physical_path, false).await?;
+            self.write_file(file, &physical_path, file.permission.is_executable())
+                .await?;
+        }
+
+        // 最後にリンクを作成
+        for (path, target) in links {
+            let physical_path = self.get_physical_path(base_path, &path);
+            self.fs_handler
+                .create_symlink(&physical_path, &target)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to create symlink {} -> {}: {}",
+                        physical_path.display(),
+                        target.display(),
+                        e
+                    )
+                })?;
         }
 
         Ok(())
@@ -135,12 +159,12 @@ impl TrieToFsConverter {
     }
 
     async fn get_file_data(&self, file: &File) -> Result<Vec<u8>> {
-        match file {
-            File::Inline(data) => Ok(data.clone()),
-            File::Path(path) => self.fs_handler.read(path).map_err(|e| {
+        match &file.content {
+            FileContent::Inline(data) => Ok(data.clone()),
+            FileContent::Path(path) => self.fs_handler.read(path).map_err(|e| {
                 anyhow::anyhow!("Failed to read source file {}: {}", path.display(), e)
             }),
-            File::Url(url) => self
+            FileContent::Url(url) => self
                 .url_fetcher
                 .fetch_binary(url)
                 .await

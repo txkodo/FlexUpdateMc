@@ -1,7 +1,8 @@
 use crate::domain::McVanillaVersionId;
 use crate::infra::trie_loader::TrieLoader;
 use crate::infra::url_fetcher::UrlFetcher;
-use crate::util::file_trie::{Dir, File, Path};
+use crate::util::file_trie::{Dir, File, Path, Permission};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -134,24 +135,31 @@ impl DefaultMcJavaLoader {
             let mut trie = Dir::new();
 
             for (path, file_info) in manifest.files {
+                let virtual_path = Path::from_str(&path);
                 match file_info {
                     ManifestFile::File {
                         downloads,
-                        executable: _,
+                        executable,
                     } => {
-                        if let Some(raw_download) = downloads.raw {
-                            let url = Url::parse(&raw_download.url)
-                                .map_err(|e| format!("Invalid file URL: {}", e))?;
-                            let file = File::Url(url);
-                            let virtual_path = Path::from_str(&path);
-                            trie.put_file(virtual_path, file)
-                                .map_err(|_| format!("Failed to add file {} to trie", path))?;
-                        }
+                        let url = Url::parse(&downloads.raw.url)
+                            .map_err(|e| format!("Invalid file URL: {}", e))?;
+                        let file = File::url(
+                            url,
+                            match executable {
+                                true => Permission::executable(),
+                                false => Permission::read_only(),
+                            },
+                        );
+                        trie.put_file(virtual_path, file)
+                            .map_err(|_| format!("Failed to add file {} to trie", path))?;
                     }
                     ManifestFile::Directory {} => {
-                        let virtual_path = Path::from_str(&path);
                         trie.put_dir(virtual_path, Dir::new())
                             .map_err(|_| format!("Failed to add directory {} to trie", path))?;
+                    }
+                    ManifestFile::Link { target } => {
+                        trie.put_link(virtual_path, PathBuf::from(target))
+                            .map_err(|_| format!("Failed to add link {} to trie", path))?;
                     }
                 }
             }
@@ -258,22 +266,27 @@ impl McJavaLoader for DefaultMcJavaLoader {
 
 #[derive(Debug, Deserialize)]
 struct ManifestResponse {
-    files: HashMap<String, ManifestFile>,
+    files: IndexMap<String, ManifestFile>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type")]
 enum ManifestFile {
+    #[serde(rename = "file")]
     File {
         downloads: Downloads,
-        executable: Option<bool>,
+        executable: bool,
     },
+    #[serde(rename = "directory")]
     Directory {},
+    #[serde(rename = "link")]
+    Link { target: String },
 }
 
 #[derive(Debug, Deserialize)]
 struct Downloads {
-    raw: Option<DownloadInfo>,
+    lzma: Option<DownloadInfo>,
+    raw: DownloadInfo,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,8 +297,7 @@ struct DownloadInfo {
 #[cfg(test)]
 mod tests {
     use crate::infra::{
-        trie_loader::DefaultTrieLoader, fs_handler::DefaultFsHandler,
-        url_fetcher::DummyUrlFetcher,
+        fs_handler::DefaultFsHandler, trie_loader::DefaultTrieLoader, url_fetcher::DummyUrlFetcher,
     };
 
     use super::*;
