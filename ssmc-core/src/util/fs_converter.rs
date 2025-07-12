@@ -115,10 +115,8 @@ impl TrieToFsConverter {
             })?;
         }
 
-        println!("Writing files: {:?}", files.len());
         // 次にファイルを書き込み
         for (path, file) in files {
-            println!("Writing file: {:?}", path);
             let physical_path = self.get_physical_path(base_path, &path);
             self.write_file(file, &physical_path, file.permission.is_executable())
                 .await?;

@@ -19,7 +19,9 @@ use std::{
 };
 
 use crate::infra::{
-    bot_spawner::BotSpawner, free_port_finder::FreePortFinder, region_loader::ChunkPos,
+    bot_spawner::{self, BotSpawner},
+    free_port_finder::FreePortFinder,
+    region_loader::ChunkPos,
 };
 
 // ヘルパー関数：ファイルの存在確認
@@ -50,7 +52,7 @@ pub trait ChunkGenerator {
 
 pub struct DefaultChunkGenerator {
     version_loader: VanillaVersionLoader,
-    bot_spawner: Box<dyn BotSpawner + Send + Sync>,
+    bot_spawner: Arc<dyn BotSpawner + Send + Sync>,
     free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
     trie_loader: Arc<dyn TrieLoader + Send + Sync>,
     work_dir: PathBuf,
@@ -60,7 +62,7 @@ pub struct DefaultChunkGenerator {
 impl DefaultChunkGenerator {
     pub fn new(
         version_loader: VanillaVersionLoader,
-        bot_spawner: Box<dyn BotSpawner + Send + Sync>,
+        bot_spawner: Arc<dyn BotSpawner + Send + Sync>,
         free_port_finder: Box<dyn FreePortFinder + Send + Sync>,
         trie_loader: Arc<dyn TrieLoader + Send + Sync>,
         work_dir: PathBuf,
@@ -85,8 +87,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
         version: &McVanillaVersionId,
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
-        // ボットを中心に 41 x 41 チャンクが生成される
-        let view_distance = 20;
+        // ボットを中心に 21 x 21 チャンクが生成される
+        let view_distance = 5;
 
         let (new_world_data, mut command) = {
             let (new_world_data, command_factory) = self
@@ -127,9 +129,9 @@ impl ChunkGenerator for DefaultChunkGenerator {
             };
 
             props.insert("online-mode".into(), "false".to_string());
-            props.insert("max-players".into(), self.max_bot_count.to_string());
+            props.insert("max-players".into(), 1000.to_string());
             props.insert("server-port".into(), port.to_string());
-            props.insert("view-distance".into(), view_distance.to_string());
+            props.insert("view-distance".into(), (view_distance).to_string());
             props.insert("gamemode".into(), "creative".to_string());
             props.insert("allow-flight".into(), "true".to_string());
 
@@ -172,6 +174,7 @@ impl ChunkGenerator for DefaultChunkGenerator {
         }
 
         let chunk_groups = group_chunks(chunk_list.to_vec(), view_distance);
+        println!("チャンクグループ数: {}", chunk_groups.len());
         let stdin_shared = Arc::new(Mutex::new(stdin));
 
         // 並列でボットタスクを実行
@@ -179,22 +182,33 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
         // 並列処理のために、spawn_botを各タスクで非同期実行
         for (idx, (center, chunks)) in chunk_groups.into_iter().enumerate() {
-            let chunks: HashSet<_> = chunks.into_iter().collect();
-            let botname = format!("bot{:02}", idx);
+            let bot_spawner = self.bot_spawner.clone();
+            let version = version.clone();
             let stdin_clone = stdin_shared.clone();
             let host = host.clone();
             let port = port;
-            let version = version.clone();
-
-            let (bot, rx) = self
-                .bot_spawner
-                .spawn_bot(&host, port, &version, &botname)
-                .await?;
 
             let task = tokio::spawn(async move {
+                let chunks: HashSet<_> = chunks.into_iter().collect();
+                let botname = format!("bot{:02}", idx);
+                println!(
+                    "Spawning bot {} for chunks at center ({}, {})",
+                    botname, center.x, center.z
+                );
+
+                let (bot, rx) = bot_spawner
+                    .spawn_bot(&host, port, &version, &botname)
+                    .await?;
+
                 // ボットをテレポート
                 {
                     let mut stdin_guard = stdin_clone.lock().unwrap();
+                    println!(
+                        "tp {} {} 100 {}\n",
+                        botname,
+                        center.x * 16 + 8,
+                        center.z * 16 + 8
+                    );
                     stdin_guard.write(
                         format!(
                             "tp {} {} 100 {}\n",
@@ -226,9 +240,12 @@ impl ChunkGenerator for DefaultChunkGenerator {
                 }
 
                 bot.stop()?;
+                println!(
+                    "Bot {} finished processing chunks at ({}, {})",
+                    botname, center.x, center.z
+                );
                 Ok::<(), anyhow::Error>(())
             });
-
             tasks.push(task);
         }
 
@@ -257,7 +274,7 @@ fn group_chunks(chunks: Vec<ChunkPos>, render_distance: usize) -> Vec<(ChunkPos,
     for chunk in chunks {
         let x = (chunk.x + render_distance as isize).div_euclid(box_size);
         let z = (chunk.z + render_distance as isize).div_euclid(box_size);
-        let center_chunk = ChunkPos::new(x, z);
+        let center_chunk = ChunkPos::new(x * box_size, z * box_size);
         groups
             .entry(center_chunk)
             .or_insert_with(Vec::new)

@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
 
     let chunk_generator = DefaultChunkGenerator::new(
         VanillaVersionLoader::new(url_fetcher.clone(), java_loader),
-        Box::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
+        Arc::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
         Box::new(DefaultFreePortFinder),
         Arc::new(DefaultTrieLoader::new(fs_handler.clone(), url_fetcher)),
         dim.clone(),
@@ -43,8 +43,11 @@ async fn main() -> Result<()> {
 
     let world_data = Dir::new();
 
-    let chunks: Vec<ChunkPos> = (-5..5)
-        .flat_map(|x| (-5..5).map(move |z| ChunkPos::new(x, z)))
+    let n = 100;
+    println!("チャンク生成を開始します... n={}", n);
+
+    let chunks: Vec<ChunkPos> = (-16..16)
+        .flat_map(|x| (-16..16).map(move |z| ChunkPos::new(x, z)))
         .collect();
 
     chunk_generator

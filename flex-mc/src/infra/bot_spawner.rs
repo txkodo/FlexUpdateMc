@@ -90,10 +90,11 @@ impl BotSpawner for AzaleaBotSpawner {
             .take()
             .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
         let mut err_lines = BufReader::new(stderr).lines();
+        let name2 = name.to_string();
         // ログイン完了後も継続してイベントを処理するスレッドを起動
         thread::spawn(move || {
             while let Some(Ok(line)) = err_lines.next() {
-                println!("Received err: {}", line);
+                println!("Received err: {} {}", name2, line);
             }
         });
 
@@ -103,7 +104,6 @@ impl BotSpawner for AzaleaBotSpawner {
         // ログイン完了まで待機
         let mut logged_in = false;
         while let Some(Ok(line)) = lines.next() {
-            println!("Received line: {}", line);
             let event: BotEvent = serde_json::from_str(&line)?;
             match event {
                 BotEvent::Spawn {} => {
@@ -127,7 +127,6 @@ impl BotSpawner for AzaleaBotSpawner {
         // ログイン完了後も継続してイベントを処理するスレッドを起動
         thread::spawn(move || {
             while let Some(Ok(line)) = lines.next() {
-                println!("Received line: {}", line);
                 if let Ok(event) = serde_json::from_str::<BotEvent>(&line) {
                     match event {
                         BotEvent::Chunk { x, z } => {
