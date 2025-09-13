@@ -1,5 +1,6 @@
 use anyhow::Result;
 use java_properties;
+use rand::seq::IteratorRandom;
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
@@ -13,13 +14,14 @@ use std::{
     io::{BufRead, BufReader, Cursor, Write},
     num::NonZeroUsize,
     path::PathBuf,
-    process::Stdio,
-    sync::{Arc, Mutex},
+    process::{ChildStdin, Stdio},
+    sync::{Arc, Mutex, mpsc::Receiver},
+    time::{Duration, Instant},
     vec,
 };
 
 use crate::infra::{
-    bot_spawner::{self, BotSpawner},
+    bot_spawner::{BotSpawner},
     free_port_finder::FreePortFinder,
     region_loader::ChunkPos,
 };
@@ -88,7 +90,8 @@ impl ChunkGenerator for DefaultChunkGenerator {
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
         // ボットを中心に 21 x 21 チャンクが生成される
-        let view_distance = 5;
+        let view_distance = 10;
+        let bot_count = 10;
 
         let (new_world_data, mut command) = {
             let (new_world_data, command_factory) = self
@@ -173,84 +176,32 @@ impl ChunkGenerator for DefaultChunkGenerator {
             }
         }
 
-        let chunk_groups = group_chunks(chunk_list.to_vec(), view_distance);
-        println!("チャンクグループ数: {}", chunk_groups.len());
+        let ungenarated_chunks = Arc::new(Mutex::new(
+            chunk_list.iter().copied().collect::<HashSet<_>>(),
+        ));
         let stdin_shared = Arc::new(Mutex::new(stdin));
 
-        // 並列でボットタスクを実行
-        let mut tasks = vec![];
-
-        // 並列処理のために、spawn_botを各タスクで非同期実行
-        for (idx, (center, chunks)) in chunk_groups.into_iter().enumerate() {
+        let bot_tasks = (0..bot_count).map(|idx| {
+            let bot_id = format!("bot{:02}", idx);
             let bot_spawner = self.bot_spawner.clone();
             let version = version.clone();
             let stdin_clone = stdin_shared.clone();
             let host = host.clone();
             let port = port;
+            let ungenarated_chunks = ungenarated_chunks.clone();
 
-            let task = tokio::spawn(async move {
-                let chunks: HashSet<_> = chunks.into_iter().collect();
-                let botname = format!("bot{:02}", idx);
-                println!(
-                    "Spawning bot {} for chunks at center ({}, {})",
-                    botname, center.x, center.z
-                );
-
+            tokio::spawn(async move {
                 let (bot, rx) = bot_spawner
-                    .spawn_bot(&host, port, &version, &botname)
+                    .spawn_bot(&host, port, &version, &bot_id)
                     .await?;
-
-                // ボットをテレポート
-                {
-                    let mut stdin_guard = stdin_clone.lock().unwrap();
-                    println!(
-                        "tp {} {} 100 {}\n",
-                        botname,
-                        center.x * 16 + 8,
-                        center.z * 16 + 8
-                    );
-                    stdin_guard.write(
-                        format!(
-                            "tp {} {} 100 {}\n",
-                            botname,
-                            center.x * 16 + 8,
-                            center.z * 16 + 8
-                        )
-                        .as_bytes(),
-                    )?;
-                    stdin_guard.flush()?;
-                }
-
-                // チャンクイベントを待機
-                let mut remaining_chunks = chunks;
-                let chunk_count = remaining_chunks.len();
-                for (x, z) in rx {
-                    remaining_chunks.remove(&ChunkPos::new(x as isize, z as isize));
-                    println!(
-                        "Bot {} received chunk at ({}, {}) {}/{})",
-                        botname,
-                        x,
-                        z,
-                        chunk_count - remaining_chunks.len(),
-                        chunk_count
-                    );
-                    if remaining_chunks.is_empty() {
-                        break;
-                    }
-                }
-
+                spawn_random_gen_bot(bot_id, ungenarated_chunks, rx, stdin_clone).await?;
                 bot.stop()?;
-                println!(
-                    "Bot {} finished processing chunks at ({}, {})",
-                    botname, center.x, center.z
-                );
-                Ok::<(), anyhow::Error>(())
-            });
-            tasks.push(task);
-        }
+                anyhow::Ok(())
+            })
+        });
 
         // すべてのタスクの完了を待機
-        for task in tasks {
+        for task in bot_tasks {
             task.await??;
         }
 
@@ -266,22 +217,61 @@ impl ChunkGenerator for DefaultChunkGenerator {
     }
 }
 
-fn group_chunks(chunks: Vec<ChunkPos>, render_distance: usize) -> Vec<(ChunkPos, Vec<ChunkPos>)> {
-    let mut groups = HashMap::<ChunkPos, Vec<ChunkPos>>::new();
+async fn spawn_random_gen_bot(
+    bot_id: String,
+    ungenarated_chunks: Arc<Mutex<HashSet<ChunkPos>>>,
+    rx: Receiver<(i32, i32)>,
+    stdin_mutex: Arc<Mutex<ChildStdin>>,
+) -> anyhow::Result<()> {
+    let mut rng = rand::rng();
 
-    let box_size = (render_distance * 2 + 1) as isize;
+    loop {
+        let random_chunk = {
+            match (ungenarated_chunks.lock().unwrap().iter().choose(&mut rng)) {
+                Some(chunk) => chunk.clone(),
+                None => break,
+            }
+        };
+        // ボットをテレポート
+        {
+            let mut stdin = stdin_mutex.lock().unwrap();
+            println!(
+                "tp {} {} 100 {}\n",
+                bot_id,
+                random_chunk.x * 16 + 8,
+                random_chunk.z * 16 + 8
+            );
+            stdin.write(
+                format!(
+                    "tp {} {} 100 {}\n",
+                    bot_id,
+                    random_chunk.x * 16 + 8,
+                    random_chunk.z * 16 + 8
+                )
+                .as_bytes(),
+            )?;
+            stdin.flush()?;
+        }
 
-    for chunk in chunks {
-        let x = (chunk.x + render_distance as isize).div_euclid(box_size);
-        let z = (chunk.z + render_distance as isize).div_euclid(box_size);
-        let center_chunk = ChunkPos::new(x * box_size, z * box_size);
-        groups
-            .entry(center_chunk)
-            .or_insert_with(Vec::new)
-            .push(chunk);
+        let start = Instant::now();
+        let duration = Duration::from_secs(30);
+
+        while start.elapsed() < duration {
+            let remaining = duration.saturating_sub(start.elapsed());
+            match rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
+                Ok((x, z)) => {
+                    ungenarated_chunks
+                        .lock()
+                        .unwrap()
+                        .remove(&ChunkPos::new(x as isize, z as isize));
+                    println!("Bot {} received chunk at ({}, {})", bot_id, x, z,);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // タイムアウト → ループを続ける（時間切れチェック）
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
     }
-    return groups
-        .into_iter()
-        .map(|(center, chunks)| (center, chunks))
-        .collect();
+    Ok::<(), anyhow::Error>(())
 }

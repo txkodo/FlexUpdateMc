@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::mpsc,
     thread,
+    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -30,11 +31,25 @@ pub trait BotHandle: Send {
 
 pub struct AzaleaBotSpawner {
     bot_file_path: PathBuf,
+    max_retries: u32,
+    retry_delay: Duration,
 }
 
 impl AzaleaBotSpawner {
     pub fn new(bot_file_path: PathBuf) -> Self {
-        AzaleaBotSpawner { bot_file_path }
+        AzaleaBotSpawner { 
+            bot_file_path,
+            max_retries: 3,
+            retry_delay: Duration::from_secs(5),
+        }
+    }
+
+    pub fn with_retry_config(bot_file_path: PathBuf, max_retries: u32, retry_delay: Duration) -> Self {
+        AzaleaBotSpawner { 
+            bot_file_path,
+            max_retries,
+            retry_delay,
+        }
     }
 }
 
@@ -58,71 +73,88 @@ impl BotSpawner for AzaleaBotSpawner {
         version: &McVanillaVersionId,
         name: &str,
     ) -> Result<(Box<dyn BotHandle>, mpsc::Receiver<(i32, i32)>)> {
-        if !self.bot_file_path.exists() {
-            download_bot_executable(&self.bot_file_path, &version.id()).await?;
-        }
-        let mut command = std::process::Command::new(&self.bot_file_path);
-
-        command
-            .args([
-                "--username",
-                name,
-                "--host",
-                &host.to_string(),
-                "--port",
-                &port.to_string(),
-            ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let mut child = command.spawn()?;
-
-        let (tx, rx) = mpsc::channel::<(i32, i32)>();
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
-        let mut lines = BufReader::new(stdout).lines();
-
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
-        let mut err_lines = BufReader::new(stderr).lines();
-        let name2 = name.to_string();
-        // ログイン完了後も継続してイベントを処理するスレッドを起動
-        thread::spawn(move || {
-            while let Some(Ok(line)) = err_lines.next() {
-                println!("Received err: {} {}", name2, line);
+        let mut retry_count = 0;
+        
+        let (child, mut lines, tx, rx) = loop {
+            if !self.bot_file_path.exists() {
+                download_bot_executable(&self.bot_file_path, &version.id()).await?;
             }
-        });
+            let mut command = std::process::Command::new(&self.bot_file_path);
+
+            command
+                .args([
+                    "--username",
+                    name,
+                    "--host",
+                    &host.to_string(),
+                    "--port",
+                    &port.to_string(),
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+
+            let mut child = command.spawn()?;
+
+            let (tx, rx) = mpsc::channel::<(i32, i32)>();
+
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
+            let mut lines = BufReader::new(stdout).lines();
+
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| anyhow!("Failed to capture bot process stdout"))?;
+            let mut err_lines = BufReader::new(stderr).lines();
+            let name2 = name.to_string();
+            // エラーログ処理スレッドを起動
+            thread::spawn(move || {
+                while let Some(Ok(line)) = err_lines.next() {
+                    println!("Received err: {} {}", name2, line);
+                }
+            });
+
+            // ログイン完了まで待機
+            let mut logged_in = false;
+            let mut should_retry = false;
+            
+            while let Some(Ok(line)) = lines.next() {
+                let event: BotEvent = serde_json::from_str(&line)?;
+                match event {
+                    BotEvent::Spawn {} => {
+                        println!("Bot {} logged in successfully", name);
+                        logged_in = true;
+                        break;
+                    }
+                    BotEvent::Disconnect { reason } => {
+                        println!("Bot {} disconnected during login: {}", name, reason);
+                        should_retry = true;
+                        break;
+                    }
+                    BotEvent::Chunk { x, z } => {
+                        tx.send((x, z)).unwrap();
+                    }
+                }
+            }
+
+            if logged_in {
+                break (child, lines, tx, rx);
+            }
+
+            if should_retry && retry_count < self.max_retries {
+                retry_count += 1;
+                println!("Retrying bot {} connection (attempt {}/{})", name, retry_count, self.max_retries);
+                tokio::time::sleep(self.retry_delay).await;
+                continue;
+            }
+
+            return Err(anyhow!("Bot {} failed to log in after {} attempts", name, retry_count + 1));
+        };
 
         let name_clone = name.to_string();
         let tx_clone = tx.clone();
-
-        // ログイン完了まで待機
-        let mut logged_in = false;
-        while let Some(Ok(line)) = lines.next() {
-            let event: BotEvent = serde_json::from_str(&line)?;
-            match event {
-                BotEvent::Spawn {} => {
-                    println!("Bot {} logged in successfully", name);
-                    logged_in = true;
-                    break;
-                }
-                BotEvent::Disconnect { reason } => {
-                    return Err(anyhow!("Bot {} disconnected: {}", name, reason));
-                }
-                BotEvent::Chunk { x, z } => {
-                    tx.send((x, z)).unwrap();
-                }
-            }
-        }
-
-        if !logged_in {
-            return Err(anyhow!("Bot {} failed to log in", name));
-        }
 
         // ログイン完了後も継続してイベントを処理するスレッドを起動
         thread::spawn(move || {
@@ -136,7 +168,7 @@ impl BotSpawner for AzaleaBotSpawner {
                             }
                         }
                         BotEvent::Disconnect { reason } => {
-                            println!("Bot {} disconnected: {}", name_clone, reason);
+                            println!("Bot {} disconnected after login: {}", name_clone, reason);
                             break;
                         }
                         BotEvent::Spawn {} => {

@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use flex_mc::infra::{
@@ -32,9 +32,16 @@ async fn main() -> Result<()> {
         dim.join("java"),
     ));
 
+    // リトライ設定付きのBotSpawnerを作成（最大5回リトライ、3秒間隔）
+    let bot_spawner = Arc::new(AzaleaBotSpawner::with_retry_config(
+        dim.join("azalea-bot"),
+        5,
+        Duration::from_secs(3),
+    ));
+
     let chunk_generator = DefaultChunkGenerator::new(
         VanillaVersionLoader::new(url_fetcher.clone(), java_loader),
-        Arc::new(AzaleaBotSpawner::new(dim.join("azalea-bot"))),
+        bot_spawner,
         Box::new(DefaultFreePortFinder),
         Arc::new(DefaultTrieLoader::new(fs_handler.clone(), url_fetcher)),
         dim.clone(),
@@ -43,11 +50,11 @@ async fn main() -> Result<()> {
 
     let world_data = Dir::new();
 
-    let n = 100;
+    let n = 32;
     println!("チャンク生成を開始します... n={}", n);
 
-    let chunks: Vec<ChunkPos> = (-16..16)
-        .flat_map(|x| (-16..16).map(move |z| ChunkPos::new(x, z)))
+    let chunks: Vec<ChunkPos> = (-n..n)
+        .flat_map(|x| (-n..n).map(move |z| ChunkPos::new(x, z)))
         .collect();
 
     chunk_generator
