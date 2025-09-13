@@ -1,6 +1,6 @@
 use anyhow::Result;
 use java_properties;
-use rand::seq::IteratorRandom;
+use rand::{SeedableRng, rngs::StdRng, seq::IteratorRandom};
 use ssmc_core::{
     domain::{McServerLoader, McVanillaVersionId, ServerRunOptions},
     infra::{
@@ -11,20 +11,23 @@ use ssmc_core::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader, Cursor, Write},
+    io::Cursor,
     num::NonZeroUsize,
     path::PathBuf,
-    process::{ChildStdin, Stdio},
-    sync::{Arc, Mutex, mpsc::Receiver},
+    sync::Arc,
     time::{Duration, Instant},
     vec,
 };
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{ChildStdin, Command},
+    sync::{Mutex, mpsc},
+};
 
 use crate::infra::{
-    bot_spawner::{BotSpawner},
-    free_port_finder::FreePortFinder,
-    region_loader::ChunkPos,
+    bot_spawner::BotSpawner, free_port_finder::FreePortFinder, region_loader::ChunkPos,
 };
+use futures::future;
 
 // ヘルパー関数：ファイルの存在確認
 fn file_exists(dir: &Dir, path: &VirtualPath) -> bool {
@@ -90,10 +93,10 @@ impl ChunkGenerator for DefaultChunkGenerator {
         chunk_list: &[ChunkPos],
     ) -> Result<()> {
         // ボットを中心に 21 x 21 チャンクが生成される
-        let view_distance = 10;
-        let bot_count = 10;
+        let view_distance = 5;
+        let bot_count = 3;
 
-        let (new_world_data, mut command) = {
+        let (new_world_data, command) = {
             let (new_world_data, command_factory) = self
                 .version_loader
                 .ready_server(
@@ -157,26 +160,22 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
         println!("Starting server at {:?}", &tmpdir);
         println!("Starting server at {:?}", &command);
-        let mut child = command
+        let mut child = Command::from(command)
             .current_dir(&tmpdir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
             .spawn()?;
         let stdin = child.stdin.take().unwrap();
 
         let stdout = child.stdout.take().unwrap();
         let mut lines = BufReader::new(stdout).lines();
-        while let Some(line) = lines.next() {
-            {
-                if let Ok(line) = line {
-                    if line.ends_with("For help, type \"help\"") {
-                        break;
-                    }
-                }
+        while let Some(line) = lines.next_line().await? {
+            if line.ends_with("For help, type \"help\"") {
+                break;
             }
         }
 
-        let ungenarated_chunks = Arc::new(Mutex::new(
+        let ungenarated_chunks = Arc::new(std::sync::Mutex::new(
             chunk_list.iter().copied().collect::<HashSet<_>>(),
         ));
         let stdin_shared = Arc::new(Mutex::new(stdin));
@@ -201,17 +200,19 @@ impl ChunkGenerator for DefaultChunkGenerator {
         });
 
         // すべてのタスクの完了を待機
-        for task in bot_tasks {
-            task.await??;
+
+        let results = future::join_all(bot_tasks).await;
+        for result in results {
+            result??
         }
 
         // サーバーを停止
         {
-            let mut stdin_guard = stdin_shared.lock().unwrap();
-            stdin_guard.write("stop\n".as_bytes())?;
-            stdin_guard.flush()?;
+            let mut stdin_guard = stdin_shared.lock().await;
+            stdin_guard.write_all("stop\n".as_bytes()).await?;
+            stdin_guard.flush().await?;
         }
-        child.wait()?;
+        child.wait().await?;
 
         Ok(())
     }
@@ -219,59 +220,66 @@ impl ChunkGenerator for DefaultChunkGenerator {
 
 async fn spawn_random_gen_bot(
     bot_id: String,
-    ungenarated_chunks: Arc<Mutex<HashSet<ChunkPos>>>,
-    rx: Receiver<(i32, i32)>,
+    ungenarated_chunks: Arc<std::sync::Mutex<HashSet<ChunkPos>>>,
+    mut rx: mpsc::Receiver<(i32, i32)>,
     stdin_mutex: Arc<Mutex<ChildStdin>>,
 ) -> anyhow::Result<()> {
-    let mut rng = rand::rng();
+    let mut rng = StdRng::seed_from_u64(rand::random());
 
     loop {
         let random_chunk = {
-            match (ungenarated_chunks.lock().unwrap().iter().choose(&mut rng)) {
+            match ungenarated_chunks.lock().unwrap().iter().choose(&mut rng) {
                 Some(chunk) => chunk.clone(),
                 None => break,
             }
         };
         // ボットをテレポート
         {
-            let mut stdin = stdin_mutex.lock().unwrap();
+            let mut stdin = stdin_mutex.lock().await;
             println!(
                 "tp {} {} 100 {}\n",
                 bot_id,
                 random_chunk.x * 16 + 8,
                 random_chunk.z * 16 + 8
             );
-            stdin.write(
-                format!(
-                    "tp {} {} 100 {}\n",
-                    bot_id,
-                    random_chunk.x * 16 + 8,
-                    random_chunk.z * 16 + 8
+            stdin
+                .write_all(
+                    format!(
+                        "tp {} {} 100 {}\n",
+                        bot_id,
+                        random_chunk.x * 16 + 8,
+                        random_chunk.z * 16 + 8
+                    )
+                    .as_bytes(),
                 )
-                .as_bytes(),
-            )?;
-            stdin.flush()?;
+                .await?;
+            stdin.flush().await?;
         }
 
         let start = Instant::now();
-        let duration = Duration::from_secs(30);
+        let duration = Duration::from_secs(5);
 
         while start.elapsed() < duration {
             let remaining = duration.saturating_sub(start.elapsed());
-            match rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
-                Ok((x, z)) => {
-                    ungenarated_chunks
-                        .lock()
-                        .unwrap()
-                        .remove(&ChunkPos::new(x as isize, z as isize));
-                    println!("Bot {} received chunk at ({}, {})", bot_id, x, z,);
+            match tokio::time::timeout(remaining.min(Duration::from_millis(500)), rx.recv()).await {
+                Ok(Some((x, z))) => {
+                    let mut ungenarated_chunks = ungenarated_chunks.lock().unwrap();
+                    ungenarated_chunks.remove(&ChunkPos::new(x as isize, z as isize));
+                    println!(
+                        "{} received chunk at ({}, {}) {}",
+                        bot_id,
+                        x,
+                        z,
+                        ungenarated_chunks.len()
+                    );
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Ok(None) => break, // channel closed
+                Err(_) => {
                     // タイムアウト → ループを続ける（時間切れチェック）
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     }
+    println!("{} finished", bot_id,);
     Ok::<(), anyhow::Error>(())
 }

@@ -3,10 +3,10 @@ use std::{
     net::IpAddr,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    sync::mpsc,
     thread,
     time::Duration,
 };
+use tokio::sync::mpsc;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -95,7 +95,7 @@ impl BotSpawner for AzaleaBotSpawner {
 
             let mut child = command.spawn()?;
 
-            let (tx, rx) = mpsc::channel::<(i32, i32)>();
+            let (tx, rx) = mpsc::channel::<(i32, i32)>(1000);
 
             let stdout = child
                 .stdout
@@ -134,7 +134,9 @@ impl BotSpawner for AzaleaBotSpawner {
                         break;
                     }
                     BotEvent::Chunk { x, z } => {
-                        tx.send((x, z)).unwrap();
+                        if tx.try_send((x, z)).is_err() {
+                            println!("Failed to send chunk data for bot {}", name);
+                        }
                     }
                 }
             }
@@ -162,7 +164,7 @@ impl BotSpawner for AzaleaBotSpawner {
                 if let Ok(event) = serde_json::from_str::<BotEvent>(&line) {
                     match event {
                         BotEvent::Chunk { x, z } => {
-                            if tx_clone.send((x, z)).is_err() {
+                            if tx_clone.try_send((x, z)).is_err() {
                                 // レシーバーが閉じられた場合はスレッドを終了
                                 break;
                             }

@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
 
     let world_data = Dir::new();
 
-    let n = 32;
+    let n = 128;
     println!("チャンク生成を開始します... n={}", n);
 
     let chunks: Vec<ChunkPos> = (-n..n)
